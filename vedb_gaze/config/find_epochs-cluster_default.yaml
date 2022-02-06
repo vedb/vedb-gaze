@@ -1,0 +1,13 @@
+cluster_by:
+- marker:timestamp
+- marker:norm_pos
+cluster_method: DBSCAN
+do_cluster_clean: true
+do_duration_pre_check: true
+duration_threshold: 0.3
+max_cluster_std: 4.0
+max_cluster_time: 3.0
+max_epoch_gap: 15
+min_cluster_time: 0.3
+min_epoch_length: 30
+min_n_clusters: 5
