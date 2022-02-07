@@ -1,4 +1,4 @@
-from data_analysis.utils import dictlist_to_arraydict
+from .utils import dictlist_to_arraydict
 from pupil_recording_interface.externals.circle_detector import find_pupil_circle_marker
 import numpy as np
 import file_io
