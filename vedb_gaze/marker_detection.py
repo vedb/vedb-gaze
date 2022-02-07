@@ -97,7 +97,14 @@ def find_concentric_circles(video_file, timestamp_file, scale=1.0, start_frame=N
                 this_circle["size"] = ellipse_radii.max(0)
                 this_circle["timestamp"] = timestamps[frame]
                 output_dicts.append(this_circle)
-    out = dictlist_to_arraydict(output_dicts)
+    if len(output_dicts)==0:
+        out = dict(location=[],
+            norm_pos=[],
+            timestamp=[],
+            size=[],
+            )
+    else:
+        out = dictlist_to_arraydict(output_dicts)
     return out
 
 
@@ -196,5 +203,14 @@ def find_checkerboard(
                     location=marker_position,
                     norm_pos=marker_position_normalized,)
                 output_dicts.append(tmp)
-
-    return dictlist_to_arraydict(output_dicts)
+    if len(output_dicts)==0:
+        out = dict(
+            timestamp=[],
+            location_full_checkerboard=[],
+            norm_pos_full_checkerboard=[],
+            location=[],
+            norm_pos=[],
+            )
+    else:
+        out = dictlist_to_arraydict(output_dicts)
+    return out
