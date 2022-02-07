@@ -1,4 +1,7 @@
-import pupil_detectors
+try:
+    import pupil_detectors
+except:
+    print("No pupil detection available; pupil_detectors library not present")
 import numpy as np
 import file_io
 from .utils import dictlist_to_arraydict
