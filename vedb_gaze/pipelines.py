@@ -140,6 +140,8 @@ def pupil_detection_step(session_folder, fn, param_tag, eye='left', db_tag=None,
     data = func(eye_video_file, eye_time_file, **kwargs,)
     # Manage ouptut file
     session_date = os.path.split(session_folder)[-1]
+    # Detect failure
+    failed = len(data['norm_pos']) == 0
     if db_name is None:
         sdir = os.path.join(PYDRA_OUTPUT_DIR, session_date)
         fname = f'pupil_detection_{eye}_{fn_name}_{param_tag}.npz'
@@ -149,29 +151,20 @@ def pupil_detection_step(session_folder, fn, param_tag, eye='left', db_tag=None,
             data=data,
             session=session,
             eye=eye,
+            failed=failed,
             params=param_dict,
             tag=param_dict.tag + '_%s' % eye,
             dbi=dbi,
             _id=dbi.get_uuid())
         fname = pup_doc.fname
-    # Detect failure
-    if len(data['norm_pos']) == 0:
-        fn_name = fn.split('.')[-1]
-        ff, _ = os.path.splitext(fname)
-        fname = f'{ff}_fail.txt'
-        with open(os.path.join(sdir, fname), mode='w') as fid:
-            fid.write("No pupils detected")
+    if db_name is None:
         fpath = os.path.join(sdir, fname)
-        return fpath
+        # Alternatively, rely on pydra to save... for now, that would seem
+        # to complicate things.
+        np.savez(fpath)
     else:
-        if db_name is None:
-            fpath = os.path.join(sdir, fname)
-            # Alternatively, rely on pydra to save... for now, that would seem
-            # to complicate things.
-            np.savez(fpath)
-        else:
-            pup_doc.save()
-            fpath = pup_doc.fpath
+        pup_doc.save()
+        fpath = pup_doc.fpath
     return fpath
 
 
@@ -236,7 +229,7 @@ def marker_detection_step(session_folder,
     if 'progress_bar' in default_kw:
         kwargs['progress_bar'] = progress_bar
     data = func(world_video_file, world_time_file, **kwargs,)
-
+    failed = len(data['norm_pos']) == 0
     # Manage ouptut file
     session_date = os.path.split(session_folder)[-1]
     if db_name is None:
@@ -249,30 +242,21 @@ def marker_detection_step(session_folder,
             session=session,
             marker_type=marker_type,
             detection_params=param_dict,
+            failed=failed,
             epoch_params=None,
             epoch_bytype='all',
             tag=db_tag,
             dbi=dbi,
             _id=dbi.get_uuid())
         fname = mk_doc.fname
-    # Detect failure
-    if len(data['norm_pos']) == 0:
-        fn_name = fn.split('.')[-1]
-        ff, _ = os.path.splitext(fname)
-        fname = f'{ff}_fail.txt'
-        with open(os.path.join(sdir, fname), mode='w') as fid:
-            fid.write("No markers detected")
+    if db_name is None:
         fpath = os.path.join(sdir, fname)
-        return fpath
+        # Alternatively, rely on pydra to save... for now, that would seem
+        # to complicate things.
+        np.savez(fpath)
     else:
-        if db_name is None:
-            fpath = os.path.join(sdir, fname)
-            # Alternatively, rely on pydra to save... for now, that would seem
-            # to complicate things.
-            np.savez(fpath)
-        else:
-            mk_doc.save()
-            fpath = mk_doc.fpath
+        mk_doc.save()
+        fpath = mk_doc.fpath
     return fpath
 
 
@@ -345,7 +329,8 @@ def marker_filtering_step(marker_fname,
     # this won't generalize well if we replace this step
     # with another function, but that seems unlikely
     data = func(marker_data, all_timestamps, **kwargs,)
-
+    # Detect failure
+    failed = len(data) == 0
     # Manage ouptut file
     session_date = os.path.split(session_folder)[-1]
     if db_name is None:
@@ -355,37 +340,27 @@ def marker_filtering_step(marker_fname,
     else:
         sdir = os.path.join(BASE_OUTPUT_DIR, session_date)
         fnames = []
-        for ie, epoch_data in enumerate(data):
-            mk_doc = vedb_store.MarkerDetection(
-                data=epoch_data,
-                session=session,
-                marker_type=marker_type,
-                detection_params=detection_param_dict,
-                epoch_params=epoch_param_dict,
-                epoch_bytype=ie,
-                tag=db_tag,
-                dbi=dbi,
-                _id=dbi.get_uuid())
-            fnames.append(mk_doc.fname)
-    # Detect failure
-    if len(data) == 0:
-        fn_name = fn.split('.')[-1]
-        ff, _ = os.path.splitext(fname)
-        fname = f'{ff}_fail.txt'
-        with open(os.path.join(sdir, fname), mode='w') as fid:
-            fid.write("No markers detected")
-        fpath = os.path.join(sdir, fname)
-        return fpath
-    else:
-        if db_name is None:
-            fpath = os.path.join(sdir, fname)
-            # Alternatively, rely on pydra to save... for now, that would seem
-            # to complicate things.
-            np.savez(fpath)
-        else:
+        if failed:
+            # Save mk_doc
+            mk_doc = []
             mk_doc.save()
-            fpath = mk_doc.fpath
-    return fpath
+            fnames = [mk_doc.fname]
+        else:
+            for ie, epoch_data in enumerate(data):
+                mk_doc = vedb_store.MarkerDetection(
+                    data=epoch_data,
+                    session=session,
+                    marker_type=marker_type,
+                    detection_params=detection_param_dict,
+                    epoch_params=epoch_param_dict,
+                    epoch_bytype=ie,
+                    tag=db_tag,
+                    failed=failed,
+                    dbi=dbi,
+                    _id=dbi.get_uuid())
+                mk_doc.save()
+                fnames.append(mk_doc.fname)
+    return fnames
 
 
 # Workflows
