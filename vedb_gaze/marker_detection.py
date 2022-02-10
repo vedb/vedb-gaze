@@ -98,10 +98,10 @@ def find_concentric_circles(video_file, timestamp_file, scale=1.0, start_frame=N
                 this_circle["timestamp"] = timestamps[frame]
                 output_dicts.append(this_circle)
     if len(output_dicts)==0:
-        out = dict(location=[],
-            norm_pos=[],
-            timestamp=[],
-            size=[],
+        out = dict(location=np.array([]),
+            norm_pos=np.array([]),
+            timestamp=np.array([]),
+            size=np.array([]),
             )
     else:
         out = dictlist_to_arraydict(output_dicts)
