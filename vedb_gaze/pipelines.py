@@ -76,7 +76,13 @@ def get_function(function_name):
 
 @pydra.mark.task
 @pydra.mark.annotate({'return': {'pupil_locations': typing.Any}})
-def pupil_detection_step(session_folder, fn, param_tag, eye='left', db_tag=None, db_name=None):
+def pupil_detection_step(session_folder, 
+        fn, 
+        param_tag, 
+        eye='left', 
+        db_tag=None, 
+        db_name=None,
+        is_verbose=False):
     """Run a pupil detection function as a pipeline step
     
     Parameters
@@ -94,7 +100,7 @@ def pupil_detection_step(session_folder, fn, param_tag, eye='left', db_tag=None,
     if db_name is not None:
         # This relies on proper configuration of vedb_store, to
         # know what hostname it should look for
-        dbi = vedb_store.docdb.getclient(dbname=db_name)
+        dbi = vedb_store.docdb.getclient(dbname=db_name, is_verbose=is_verbose)
         dbi.is_verbose = False
         # Find session to process
         session = dbi.query(1, type='Session', folder=session_folder)
@@ -175,7 +181,8 @@ def marker_detection_step(session_folder,
                           param_tag,
                           db_tag=None,
                           marker_type=None,
-                          db_name=None):
+                          db_name=None,
+                          is_verbose=False):
     """Run a pupil detection function as a pipeline step
     
     Parameters
@@ -192,7 +199,7 @@ def marker_detection_step(session_folder,
     if db_name is not None:
         # This relies on proper configuration of vedb_store, to
         # know what hostname it should look for
-        dbi = vedb_store.docdb.getclient(dbname=db_name)
+        dbi = vedb_store.docdb.getclient(dbname=db_name, is_verbose=is_verbose)
         # Find session to process
         session = dbi.query(1, type='Session', folder=session_folder)
         # Find input arguments for processing
@@ -231,12 +238,15 @@ def marker_detection_step(session_folder,
     data = func(world_video_file, world_time_file, **kwargs,)
     failed = len(data['norm_pos']) == 0
     # Manage ouptut file
-    session_date = os.path.split(session_folder)[-1]
     if db_name is None:
+        session_date = os.path.split(session_folder)[-1]
         sdir = os.path.join(PYDRA_OUTPUT_DIR, session_date)
         fname = f'marker_detection_{fn_name}_{param_tag}.npz'
+        fpath = os.path.join(sdir, fname)
+        # Alternatively, rely on pydra to save... for now, that would seem
+        # to complicate things.
+        np.savez(fpath)
     else:
-        sdir = os.path.join(BASE_OUTPUT_DIR, session_date)
         mk_doc = vedb_store.MarkerDetection(
             data=data,
             session=session,
@@ -249,26 +259,21 @@ def marker_detection_step(session_folder,
             dbi=dbi,
             _id=dbi.get_uuid())
         fname = mk_doc.fname
-    if db_name is None:
-        fpath = os.path.join(sdir, fname)
-        # Alternatively, rely on pydra to save... for now, that would seem
-        # to complicate things.
-        np.savez(fpath)
-    else:
         mk_doc.save()
         fpath = mk_doc.fpath
     return fpath
 
 
 @pydra.mark.task
-@pydra.mark.annotate({'return': {'marker_locations': typing.Dict}})
+@pydra.mark.annotate({'return': {'marker_locations': typing.List}})
 def marker_filtering_step(marker_fname,
                           session_folder,
                           fn,
                           param_tag,
                           db_tag=None,
                           marker_type=None,
-                          db_name=None):
+                          db_name=None,
+                          is_verbose=False):
     """"""
     if is_notebook:
         progress_bar = tqdm.notebook.tqdm
@@ -278,7 +283,7 @@ def marker_filtering_step(marker_fname,
     if db_name is not None:
         # This relies on proper configuration of vedb_store, to
         # know what hostname it should look for
-        dbi = vedb_store.docdb.getclient(dbname=db_name)
+        dbi = vedb_store.docdb.getclient(dbname=db_name, is_verbose=is_verbose)
         # Find session to process
         session = dbi.query(1, type='Session', folder=session_folder)
         # Find input arguments for processing

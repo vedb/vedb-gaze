@@ -5,6 +5,10 @@ import file_io
 import cv2
 import  copy
 
+import multiprocessing
+from multiprocessing import Pool
+from itertools import repeat
+
 def _opencv_ellipse_to_dict(ellipse_dict):
     data = {}
     data["ellipse"] = {
@@ -107,12 +111,65 @@ def find_concentric_circles(video_file, timestamp_file, scale=1.0, start_frame=N
         out = dictlist_to_arraydict(output_dicts)
     return out
 
+def _find_checkerboard_frame(args):
+    """Find chessboard and compute corner locations within chessboard for one frame. 
+    
+    Parameters
+    ----------
+    args: tuple
+        of: (video_data, timestamp, scale, (vdim, hdim), computed_refinement_window_size, 
+        checkerboard_size) - see `find_checkerboard` below for more sensible inputs.
+
+    Notes
+    -----
+    This is a helper function, meant to facilitate multi-threaded calls to opencv 
+    functions `cv2.findChessboardCorners()` and `cv2.cornerSubPix()`, which do not 
+    seem to be natively parallel. The cumbersome input syntax is related to the 
+    use of multiprocessing module in conjunction with tqdm for progress bars. 
+    """
+    # Find the chess board corners
+    video_data, timestamp, scale, (vdim, hdim), computed_refinement_window_size, checkerboard_size = args
+    detection_flags = None
+    #found_checkerboard, corners1 = cv2.findChessboardCorners(
+    #    video_data[batch_frame], checkerboard_size, detection_flags)
+    found_checkerboard, corners1 = cv2.findChessboardCorners(
+        video_data, checkerboard_size, detection_flags)
+    # If found, add object points, image points (after refining them)
+    if found_checkerboard:
+        # Fixed opencv parameters - revisit?
+        n_iterations = 30
+        threshold = 0.001
+        sub_pixel_corner_criteria = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, n_iterations, threshold)
+        zero_zone = (-1, -1)
+        corners2 = cv2.cornerSubPix(
+            video_data, corners1, computed_refinement_window_size, zero_zone, sub_pixel_corner_criteria)
+        # Parse outputs (convert back to full-size pixels, and convert
+        # to 0-1 image coordinates for full checkerboard and centroid)
+        corners = np.squeeze(corners2) / scale
+        marker_position = np.mean(corners, axis=0)
+        corners_normalized = corners / np.array([hdim, vdim])
+        marker_position_normalized = np.mean(
+            corners_normalized, axis=0)
+        # Keep outputs
+        tmp = dict(
+            timestamp=timestamp,
+            location_full_checkerboard=corners,
+            norm_pos_full_checkerboard=corners_normalized,
+            location=marker_position,
+            norm_pos=marker_position_normalized,)
+
+    else:
+        tmp = {}
+    return tmp
 
 def find_checkerboard(
     video_file,
     timestamp_file,
     checkerboard_size=(6, 8),
     scale=1.0,
+    refinement_window_size=(11,11),
+    n_cores=12,
     start_frame=None,
     end_frame=None,
     batch_size=None,
@@ -149,9 +206,6 @@ def find_checkerboard(
         def progress_bar(x, total=0): return x
 
     timestamps = np.load(timestamp_file)
-
-    # termination criteria: Make inputs?
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
     n_frames_total, vdim, hdim, _ = file_io.var_size(video_file)
     if start_frame is None:
         start_frame = 0
@@ -162,11 +216,12 @@ def find_checkerboard(
         max_batch_bytes = 1024**3 * 4  # 4 GB
         n_bytes = (vdim * scale) * (hdim * scale)
         batch_size = int(np.floor(max_batch_bytes / n_bytes))
-
+    # More computed args & useful variables
+    use_multiprocessing = n_cores is not None
+    computed_refinement_window_size = tuple([int(np.ceil(x * scale)) for x in refinement_window_size])
     n_frames = end_frame - start_frame
     n_batches = int(np.ceil(n_frames / batch_size))
     output_dicts = []
-
     for batch in range(n_batches):
         print("Running batch %d/%d" % (batch+1, n_batches))
         batch_start = batch * batch_size + start_frame
@@ -176,40 +231,41 @@ def find_checkerboard(
             frames=(batch_start, batch_end),
             size=scale,
             color='gray')
-
-        for batch_frame, frame in enumerate(progress_bar(range(batch_start, batch_end))):
-            # Find the chess board corners
-            found_checkerboard, corners1 = cv2.findChessboardCorners(
-                video_data[batch_frame], checkerboard_size, None)
-            # If found, add object points, image points (after refining them)
-            if found_checkerboard:
-                # Fixed opencv parameters - revisit?
-                winSize = (11, 11)
-                zeroZone = (-1, -1)
-                corners2 = cv2.cornerSubPix(
-                    video_data[batch_frame], corners1, winSize, zeroZone, criteria)
-                # Parse outputs (convert back to full-size pixels, and convert
-                # to 0-1 image coordinates for full checkerboard and centroid)
-                corners = np.squeeze(corners2) / scale
-                marker_position = np.mean(corners, axis=0)
-                corners_normalized = corners / np.array([hdim, vdim])
-                marker_position_normalized = np.mean(
-                    corners_normalized, axis=0)
-                # Keep outputs
-                tmp = dict(
-                    timestamp=timestamps[frame],
-                    location_full_checkerboard=corners,
-                    norm_pos_full_checkerboard=corners_normalized,
-                    location=marker_position,
-                    norm_pos=marker_position_normalized,)
-                output_dicts.append(tmp)
+        vframes_start = (batch_start - start_frame) % batch_size
+        vframes_end = (batch_end - start_frame) % batch_size
+        n_frames = batch_end - batch_start
+        # Args must be concatenated like this for use with parallel processing & progress bar
+        # Look up "istarmap" for a pool object for slightly less clunky syntax, but use of e.g.
+        # () requires python 3.8+, which I'd rather not commit to yet
+        zz = zip(video_data[vframes_start:vframes_end],
+                 timestamps[batch_start:batch_end],
+                 repeat(scale),
+                 repeat((vdim, hdim)),
+                 repeat(computed_refinement_window_size),
+                 repeat(checkerboard_size))
+        if use_multiprocessing:
+            if n_cores > multiprocessing.cpu_count():
+                n_cores = multiprocessing.cpu_count()
+            # Parallel call to framewise calculation of checkerboard position
+            with Pool(n_cores) as p:
+                tmp_out = list(progress_bar(p.imap(_find_checkerboard_frame, zz), total=n_frames))
+            # Filter output to have no empty dicts in list
+            tmp_out = [x for x in tmp_out if x]
+            output_dicts.extend(tmp_out)
+        else:
+            # Run serially (easier to debug if anything goes wrong)
+            for args in progress_bar(zz, total=n_frames):
+                tmp = _find_checkerboard_frame(args)
+                if tmp:
+                    output_dicts.append(tmp)
+    # Handle empty output
     if len(output_dicts)==0:
         out = dict(
-            timestamp=[],
-            location_full_checkerboard=[],
-            norm_pos_full_checkerboard=[],
-            location=[],
-            norm_pos=[],
+            timestamp=np.array([]),
+            location_full_checkerboard=np.array([]),
+            norm_pos_full_checkerboard=np.array([]),
+            location=np.array([]),
+            norm_pos=np.array([]),
             )
     else:
         out = dictlist_to_arraydict(output_dicts)

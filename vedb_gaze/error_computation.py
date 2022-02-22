@@ -1,6 +1,13 @@
 import numpy as np
-import thinplate as tps # library here: http://github.com/cheind/py-thin-plate-spline
 from scipy import interpolate
+try:
+    import thinplate as tps # library here: 
+except ImportError:
+    print(("`thinplate` library not found.\n"
+           "Please download and install py-thinplate-spline\n"
+           "( http://github.com/cheind/py-thin-plate-spline )\n"
+           "if you wish to use thin plate splines for calibration.\b"
+           ))
 
 
 

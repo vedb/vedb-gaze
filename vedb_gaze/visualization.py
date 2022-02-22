@@ -1,7 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import animation, patches, colors
+from matplotlib import animation, patches, colors, gridspec
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
 
+from .utils import match_time_points
+
+# Colors for clusters
+np.random.seed(101)
+color_values = np.linspace(0, 1, 256)
+np.random.shuffle(color_values)
+cluster_cmap = ListedColormap(plt.cm.hsv(color_values))
 
 def gaze_hist(gaze, 
     confidence_threshold=0, 
@@ -53,6 +61,155 @@ def gaze_hist(gaze,
     vmax_hst = np.percentile(hst[0], 97.5)
     hst_im = ax.imshow(hst[0], vmax=vmax_hst, **im_kw_hist)
     return hst_im
+
+
+def plot_timestamps(timestamps, full_time, start_time=0, ax=None, **kwargs):
+    """Plot `timestamps` within `full_time` as indicator variables (ones)
+
+    Parameters
+    ----------
+    timestamps : array
+        timestamps for events to plot
+    full_time : array
+        array of all possible timestamps
+    start_time : int, optional
+        time to subtract off `timestamps` (use if start time in `timestamps` differs
+        from start time in `full_time`), by default 0
+    ax : [type], optional
+        axis into which to plot, by default None, which opens a new figure
+    """
+    xlim = [full_time.min()/60, full_time.max()/60]
+    # Get timing for each epoch
+    calibration_time_index = np.in1d(full_time, timestamps-start_time)
+    if ax is None:
+        fig, ax = plt.subplots()
+    ax.plot(full_time / 60, calibration_time_index, **kwargs)
+    ax.set_xlim(xlim)
+
+
+# def plot_marker_epoch(ses, marker, eye_left, eye_right,
+#                       show_image=True, marker_field='norm_pos', sc=2,
+#                       keep_index=None, confidence_threshold=0, point_size=1,
+#                       marker_color=((0.2, 0.2, 0.2),), n_images=3,
+#                       world_ax=None, eye_left_ax=None, eye_right_ax=None, cmap=cluster_cmap):
+#     """Plot world w/ markers, eyes w/ pupils
+#     assumes 
+    
+#     Parameters
+#     ----------
+#     ses : TYPE
+#         Description
+#     marker : TYPE
+#         Description
+#     eye_left : TYPE
+#         Description
+#     eye_right : TYPE
+#         Description
+#     groups : None, optional
+#         Description
+#     marker_field : str, optional
+#         Description
+#     sc : int, optional
+#         Description
+#     keep_index : None, optional
+#         Description
+#     """
+
+#     n_tp = len(marker['timestamp'])
+#     if keep_index is None:
+#         keep_index = np.ones((n_tp, )) > 0
+#     if eye_left is not None:
+#         if len(eye_left['norm_pos']) > n_tp:
+#             eye_left = match_time_points(marker, eye_left, session=ses)
+#         lc = eye_left['confidence']
+#         keep_index &= (lc > confidence_threshold)
+#     if eye_right is not None:
+#         if len(eye_right['norm_pos']) > n_tp:
+#             eye_right = match_time_points(marker, eye_right, session=ses)
+#         rc = eye_right['confidence']
+#         keep_index &= (rc > confidence_threshold)
+#     if 'marker_cluster_index' not in marker:
+#         c = marker_color
+#         dot_colors = None
+#         groups = None
+#     else:
+#         groups = marker['marker_cluster_index']
+#         c = groups[keep_index]
+#         if len(np.unique(c)) == 1:
+#             # One group only
+#             c = marker_color
+#             dot_colors = None
+#         else:
+#             dot_colors = cmap
+#     if 'size' in marker:
+#         kw = dict(s=marker['size'][keep_index])
+#     else:
+#         kw = {}
+#     if point_size is not None:
+#         kw.update(s=point_size)
+#     nr_gs = 5
+#     nc_gs = 4
+#     if world_ax is None:
+#         # Set up figure & world axis
+#         fig = plt.figure(figsize=(nc_gs * sc, nr_gs * sc))
+#         gs = gridspec.GridSpec(nr_gs, nc_gs, wspace=0.3, hspace=0.3)
+#         world_ax = fig.add_subplot(gs[:3, :])
+#     world_ax.scatter(*marker[marker_field][keep_index,
+#                      :].T, c=c, cmap=dot_colors, **kw)
+#     world_ax.axis([0, 1, 1, 0])
+#     if show_image:
+#         show_average_frames(
+#             ses, marker['timestamp'][keep_index] - ses.start_time, ax=world_ax, n_images=n_images)
+#     # Left
+#     if eye_left_ax is not False:
+#         if eye_left_ax is None:
+#             eye_left_ax = fig.add_subplot(gs[3:, 0:2])
+#         eye_left_ax.scatter(
+#             *eye_left['norm_pos'][keep_index, :].T, c=c, cmap=dot_colors, **kw)
+#         if show_image:
+#             show_average_frames(ses, marker['timestamp'][keep_index] - ses.start_time,
+#                                 ax=eye_left_ax, to_load='eye_left', n_images=n_images)
+#         eye_left_ax.axis([0, 1, 0, 1])
+#     # Right
+#     if eye_right_ax is not False:
+#         if eye_right_ax is None:
+#             eye_right_ax = fig.add_subplot(gs[3:, 2:4])
+#         eye_right_ax.scatter(
+#             *eye_right['norm_pos'][keep_index, :].T, c=c, cmap=dot_colors, **kw)
+#         if show_image:
+#             show_average_frames(ses, marker['timestamp'][keep_index] - ses.start_time,
+#                                 ax=eye_right_ax, to_load='eye_right', n_images=n_images)
+#         eye_right_ax.axis([1, 0, 1, 0])
+#     return world_ax, eye_left_ax, eye_right_ax
+
+
+def set_eye_axis_lims(ax, eye):
+    if eye == 'left':
+        ax.axis([0, 1, 0, 1])
+    elif eye == 'right':
+        ax.axis([1, 0, 1, 0])
+
+def make_world_eye_axes(eye_left_ax=True, eye_right_ax=True, fig_scale=5):
+    """Plot world w/ markers, eyes w/ pupils
+    assumes 
+    
+    """
+    # Set up figure & world axis
+    nr_gs = 5
+    nc_gs = 4
+    mx_n = max(nr_gs, nc_gs)
+    fig = plt.figure(figsize=(nc_gs / mx_n * fig_scale, nr_gs / mx_n * fig_scale))
+    gs = gridspec.GridSpec(nr_gs, nc_gs, wspace = 0.3, hspace = 0.3)
+    world_ax = fig.add_subplot(gs[:3,:])
+    # Left
+    if eye_left_ax:
+        eye_left_ax = fig.add_subplot(gs[3:, 0:2])
+        set_eye_axis_lims(eye_left_ax, 'left')
+    # Right
+    if eye_right_ax: 
+        eye_right_ax = fig.add_subplot(gs[3:, 2:4])
+        set_eye_axis_lims(eye_right_ax, 'right')
+    return world_ax, eye_left_ax, eye_right_ax
 
 
 def make_dot_overlay_animation(
