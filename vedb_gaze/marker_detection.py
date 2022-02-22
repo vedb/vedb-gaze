@@ -226,18 +226,21 @@ def find_checkerboard(
         print("Running batch %d/%d" % (batch+1, n_batches))
         batch_start = batch * batch_size + start_frame
         batch_end = np.minimum(batch_start + batch_size, end_frame)
+        print('Loading...')
         video_data = file_io.load_mp4(
             video_file,
             frames=(batch_start, batch_end),
             size=scale,
             color='gray')
-        vframes_start = (batch_start - start_frame) % batch_size
-        vframes_end = (batch_end - start_frame) % batch_size
+        #vframes_start = (batch_start - start_frame) % batch_size
+        #vframes_end = (batch_end - start_frame) % batch_size
         n_frames = batch_end - batch_start
+        assert video_data.shape[0] == n_frames, 'Frame number error'
+        assert len(timestamps[batch_start:batch_end]) == n_frames, 'Timestamp / frame number mismatch'
         # Args must be concatenated like this for use with parallel processing & progress bar
         # Look up "istarmap" for a pool object for slightly less clunky syntax, but use of e.g.
         # () requires python 3.8+, which I'd rather not commit to yet
-        zz = zip(video_data[vframes_start:vframes_end],
+        zz = zip(video_data,
                  timestamps[batch_start:batch_end],
                  repeat(scale),
                  repeat((vdim, hdim)),
