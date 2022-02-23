@@ -6,7 +6,9 @@ import cv2
 import  copy
 
 import multiprocessing
-from multiprocessing import Pool
+from multiprocessing import Pool, set_start_method, get_context
+#set_start_method("spawn")
+
 from itertools import repeat
 
 def _opencv_ellipse_to_dict(ellipse_dict):
@@ -250,7 +252,7 @@ def find_checkerboard(
             if n_cores > multiprocessing.cpu_count():
                 n_cores = multiprocessing.cpu_count()
             # Parallel call to framewise calculation of checkerboard position
-            with Pool(n_cores) as p:
+            with Pool(n_cores) as p: # get_context('spawn').Pool(n_cores) as p: # 
                 tmp_out = list(progress_bar(p.imap(_find_checkerboard_frame, zz), total=n_frames))
             # Filter output to have no empty dicts in list
             tmp_out = [x for x in tmp_out if x]
