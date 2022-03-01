@@ -2,6 +2,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pathlib
 try:
     import thinplate as tps
 except:
@@ -29,8 +30,8 @@ from pupil_recording_interface.externals import calibrate_2d
 
 from pupil_recording_interface.externals.gaze_mappers import Binocular_Gaze_Mapper
 
-FBASE = os.path.split(__file__)
-print(FBASE)
+BASE_DIR, _ = os.path.split(__file__)
+BASE_DIR = pathlib.Path(BASE_DIR)
 
 def parse_plab_data(pupil_list, ref_list, mode="2d", min_calibration_confidence=0.5):
     """Parse lists of dictionaries geneated by pupil labs code in preparation for calibration
@@ -224,8 +225,8 @@ class Calibration(object):
                  video_dims,
                  min_calibration_confidence=0.6,
                  calibration_type='monocular_pl',
-                 params=None,
                  mapping_computed=False,
+                 **params,
                  ):
         """Class to compute gaze mapping calibration in a few different ways.
         
@@ -243,7 +244,6 @@ class Calibration(object):
             Description
         
         """
-        base_dir = FBASE
         calibration_list = arraydict_to_dictlist(calibration_arrays)
 
         # Store for later
@@ -256,17 +256,16 @@ class Calibration(object):
         self.params = params
         self.mapping_computed = mapping_computed
         # Optionally load if params are not a dict
-        if isinstance(self.params, str):
-            base_dir = '' # compute path from .config/ folder
-            fpath = base_dir / \
-                ('params_calibration_%s.yaml' % self.params)
+        if 'tag' in self.params:
+            fpath = BASE_DIR / 'config' / \
+                ('calibration_%s.yaml' % self.params['tag'])
             cal_params = read_yaml(fpath)
             if 'min_calibration_confidence' in cal_params:
                 self.min_calibration_confidence = cal_params.pop(
                     'min_calibration_confidence')
             self.params = cal_params
 
-        if len(pupil_arrays) == 2:
+        if isinstance(pupil_arrays, (list, tuple)) and len(pupil_arrays) == 2:
             left_pupil, right_pupil = self.pupil_arrays
             if self.mapping_computed:
                 self.pupil_left = left_pupil
@@ -377,16 +376,20 @@ class Calibration(object):
         elif return_type == 'array':
             return gaze_array['position']
 
-
-    def save(self, fpath):
-        """Save critical data to do mappings of pupil to gaze"""
-        to_save = dict(
+    @property
+    def calibration_data(self):
+        pp = dict(
             map_params=self.map_params,
             calibration_arrays=self.calibration_arrays,
             pupil_arrays=self.pupil_arrays,
             video_dims=self.video_dims,
+            calibration_type=self.calibration_type,
         )
-        np.savez(fpath, **to_save)
+        return pp
+
+    def save(self, fpath):
+        """Save critical data to do mappings of pupil to gaze"""
+        np.savez(fpath, **self.calibration_data)
 
     @classmethod
     def _get_fpath(base_dir, folder, eye, calibration_tag, pupil_tag, marker_type, marker_tag, epoch):

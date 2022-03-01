@@ -1,0 +1,3 @@
+calibration_type: monocular_tps
+lambd: 1
+min_calibration_confidence: 0.6

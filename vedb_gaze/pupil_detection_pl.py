@@ -68,6 +68,13 @@ def plabs_detect_pupil(
         norm_pos
     """
     scale = 1.0  # hard-coded to always load full-size video
+    if id is None:
+        if 'eye0' in video_file:
+            id = 0
+        elif 'eye1' in video_file:
+            id = 1
+        else:
+            raise ValueError("If video is not `eye0.mp4` or eye1.mp4`, per pupil labs conventions, then id kwarg must be specified!")
     if progress_bar is None:
         def progress_bar(x): return x
     timestamps = np.load(timestamp_file)
@@ -118,8 +125,7 @@ def plabs_detect_pupil(
             out["norm_pos"] = (np.array(out["location"]) / eye_dims).tolist()
             if timestamps is not None:
                 out["timestamp"] = timestamps[frame]
-            if id is not None:
-                out["id"] = id
+            out["id"] = id
             pupil_dicts.append(out)
     out = dictlist_to_arraydict(pupil_dicts)
     return out

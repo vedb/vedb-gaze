@@ -271,10 +271,10 @@ def make_dot_overlay_animation(
         if len(x) == 1:
             x = x * n
         return x
-
+    dot_locs = dot_locations.copy()
     # Inputs
-    if np.ndim(dot_locations) == 2:
-        dot_locations = dot_locations[np.newaxis, :]
+    if np.ndim(dot_locs) == 2:
+        dot_locs = dot_locs[np.newaxis, :]
     if dot_markers is None:
         dot_markers = "o"
 
@@ -288,8 +288,8 @@ def make_dot_overlay_animation(
     aspect_ratio = x / y
     if figsize is None:
         figsize = (5 * aspect_ratio, 5)
-    if np.max(dot_locations) > 1:
-        dot_locations /= np.array([x, y])
+    if np.nanmean(dot_locs) > 1:
+        dot_locs /= np.array([x, y])
     # Match up timestamps
     if video_timestamps is not None:
         mean_video_frame_time = np.mean(np.diff(video_timestamps))
@@ -303,18 +303,18 @@ def make_dot_overlay_animation(
         print(vframes)
         n_dots_ds = len(vframes)
         print(n_dots_ds)
-        dot_locations_ds = np.hstack(
+        dot_locs_ds = np.hstack(
             [
-                np.median(dot_locations[:, t_i[vframe_i == j]], axis=1)[:, None, :]
+                np.median(dot_locs[:, t_i[vframe_i == j]], axis=1)[:, None, :]
                 for j in vframes
             ]
         )
-        # print(dot_locations_ds.shape)
+        # print(dot_locs_ds.shape)
     else:
-        dot_locations_ds = dot_locations
+        dot_locs_ds = dot_locs
         vframes = np.arange(n_frames)
     # Plotting args
-    n_dots, n_dot_frames, _ = dot_locations_ds.shape
+    n_dots, n_dot_frames, _ = dot_locs_ds.shape
     dot_colors = prep_input(dot_colors, n_dots)
     dot_widths = prep_input(dot_widths, n_dots)
     dot_markers = prep_input(dot_markers, n_dots)
@@ -339,7 +339,7 @@ def make_dot_overlay_animation(
         return artists
 
     # animation function. This is called sequentially
-    def update_func(i, artists, dot_locations, vframes):
+    def update_func(i, artists, dot_locs, vframes):
 
         artists[0].set_array(video_data[i])
         # Also needs attention if different timecourses for different dots
@@ -347,14 +347,14 @@ def make_dot_overlay_animation(
             # may end up being: if i in vframes[j]:
             if i in vframes:
                 dot_i = vframes.tolist().index(i)
-                _ = artist.set_offsets(dot_locations[j, dot_i])
+                _ = artist.set_offsets(dot_locs[j, dot_i])
             else:
                 _ = artist.set_offsets([-1, -1])
         return artists
 
     init = partial(init_func, fig=fig, ax=ax, artists=artists)
     update = partial(
-        update_func, artists=artists, dot_locations=dot_locations_ds, vframes=vframes
+        update_func, artists=artists, dot_locs=dot_locs_ds, vframes=vframes
     )
     # call the animator. blit=True means only re-draw the parts that have changed.
     anim = animation.FuncAnimation(
@@ -426,3 +426,20 @@ def colormap_2d(
     if map_to_uint8:
         colored = (colored * 255).astype(np.uint8)
     return colored
+
+
+def show_dots(mk, start=0, end=10, size=0.25, fps=30, video='world_camera', **kwargs):
+    """Make an animation of detected markers as dots overlaid on video
+    mk is a vedb_store class (MarkerDetection or PupilDetection so far)
+    Set vdieo, size, frame rate according to what mk is!
+    """
+    mk.db_load()
+    vtime, vdata = mk.session.load(video, time_idx=(start, end), size=size)
+    anim = make_dot_overlay_animation(vdata, 
+                                    mk.data['norm_pos'],
+                                    dot_timestamps=mk.timestamp,
+                                    video_timestamps=vtime,
+                                    fps=30,
+                                    **kwargs,
+                                    )
+    return anim
