@@ -150,6 +150,7 @@ def pupil_detection(session_folder,
         kwargs['progress_bar'] = progress_bar
     # Call function
     data = func(eye_video_file, eye_time_file, **kwargs,)
+    #move_intermediate_files = 'intermediate_files' in data
     # Manage ouptut file
     session_date = os.path.split(session_folder)[-1]
     # Detect failure
@@ -169,6 +170,8 @@ def pupil_detection(session_folder,
             dbi=dbi,
             _id=dbi.get_uuid())
         fname = pup_doc.fname
+        #if move_intermediate_files:
+        #    os.rename(data['intermediate_files'], db_location)
     if db_name is None:
         fpath = os.path.join(sdir, fname)
         # Alternatively, rely on pydra to save... for now, that would seem
