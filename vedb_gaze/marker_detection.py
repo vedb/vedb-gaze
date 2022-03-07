@@ -26,7 +26,35 @@ def _opencv_ellipse_to_dict(ellipse_dict):
     data["confidence"] = ellipse_dict.confidence
 
 
-def find_concentric_circles(video_file, timestamp_file, scale=1.0, start_frame=None, end_frame=None, batch_size=None, progress_bar=None):
+def _find_circles_frame(args):
+    """Run a single frame of calibration marker (concentric circle) detection"""
+    video_data, timestamp, scale, (vdim, hdim) = args
+    world_circles = find_pupil_circle_marker(video_data, 1.0)
+    output_dicts = []
+    for iw, w in enumerate(world_circles):
+        ellipses = w["ellipses"]
+        this_circle = {}
+        ellipse_centers = np.array([e[0] for e in ellipses]) / scale
+        this_circle["location"] = ellipse_centers.mean(0).tolist()
+        this_circle["norm_pos"] = this_circle["location"] / np.array(
+            [hdim, vdim]
+        )
+        this_circle["norm_pos"] = this_circle["norm_pos"].tolist()
+        ellipse_radii = np.array([e[1] for e in ellipses])
+        this_circle["size"] = ellipse_radii.max(0)
+        this_circle["timestamp"] = timestamp
+        output_dicts.append(this_circle)
+    return output_dicts
+
+
+def find_concentric_circles(video_file,
+        timestamp_file,
+        scale=1.0,
+        n_cores=12,
+        start_frame=None,
+        end_frame=None,
+        batch_size=None,
+        progress_bar=None):
     """Use PupilLabs circle detector to find concentric circles
     
     Assumes uint8 RGB image input
@@ -60,7 +88,8 @@ def find_concentric_circles(video_file, timestamp_file, scale=1.0, start_frame=N
     timestamps = np.load(timestamp_file)
 
     # termination criteria: Make inputs?
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    #criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    use_multiprocessing = n_cores is not None
     n_frames_total, vdim, hdim, _ = file_io.var_size(video_file)
     if start_frame is None:
         start_frame = 0
@@ -86,32 +115,45 @@ def find_concentric_circles(video_file, timestamp_file, scale=1.0, start_frame=N
             frames=(batch_start, batch_end),
             size=scale,
             color='gray')
-
-        for batch_frame, frame in enumerate(progress_bar(range(batch_start, batch_end))):
-            world_circles = find_pupil_circle_marker(
-                video_data[batch_frame], 1.0)
-            for iw, w in enumerate(world_circles):
-                ellipses = w["ellipses"]
-                this_circle = {}
-                ellipse_centers = np.array([e[0] for e in ellipses]) / scale
-                this_circle["location"] = ellipse_centers.mean(0).tolist()
-                this_circle["norm_pos"] = this_circle["location"] / np.array(
-                    [hdim, vdim]
-                )
-                this_circle["norm_pos"] = this_circle["norm_pos"].tolist()
-                ellipse_radii = np.array([e[1] for e in ellipses])
-                this_circle["size"] = ellipse_radii.max(0)
-                this_circle["timestamp"] = timestamps[frame]
-                output_dicts.append(this_circle)
-    if len(output_dicts)==0:
+        n_frames = batch_end - batch_start
+        assert video_data.shape[0] == n_frames, 'Frame number error'
+        assert len(timestamps[batch_start:batch_end]
+                   ) == n_frames, 'Timestamp / frame number mismatch'
+        # Args must be concatenated like this for use with parallel processing & progress bar
+        # Look up "istarmap" for a pool object for slightly less clunky syntax, but use of e.g.
+        # () requires python 3.8+, which I'd rather not commit to yet
+        zz = zip(video_data,
+                 timestamps[batch_start:batch_end],
+                 repeat(scale),
+                 repeat((vdim, hdim)),
+                 )
+        if use_multiprocessing:
+            if n_cores > multiprocessing.cpu_count():
+                n_cores = multiprocessing.cpu_count()
+            # Parallel call to framewise calculation of checkerboard position
+            with Pool(n_cores) as p:  # get_context('spawn').Pool(n_cores) as p: #
+                tmp_out = list(progress_bar(
+                    p.imap(_find_circles_frame, zz), total=n_frames))
+            # Filter output to have no empty dicts in list
+            for x in tmp_out:
+                if x: 
+                    output_dicts.extend(x)
+        else:
+            # Run serially (easier to debug if anything goes wrong)
+            for args in progress_bar(zz, total=n_frames):
+                tmp = _find_circles_frame(args)
+                if tmp:
+                    output_dicts.extend(tmp)
+    if len(output_dicts) == 0:
         out = dict(location=np.array([]),
-            norm_pos=np.array([]),
-            timestamp=np.array([]),
-            size=np.array([]),
-            )
+                   norm_pos=np.array([]),
+                   timestamp=np.array([]),
+                   size=np.array([]),
+                   )
     else:
         out = dictlist_to_arraydict(output_dicts)
     return out
+
 
 def _find_checkerboard_frame(args):
     """Find chessboard and compute corner locations within chessboard for one frame. 
@@ -234,8 +276,6 @@ def find_checkerboard(
             frames=(batch_start, batch_end),
             size=scale,
             color='gray')
-        #vframes_start = (batch_start - start_frame) % batch_size
-        #vframes_end = (batch_end - start_frame) % batch_size
         n_frames = batch_end - batch_start
         assert video_data.shape[0] == n_frames, 'Frame number error'
         assert len(timestamps[batch_start:batch_end]) == n_frames, 'Timestamp / frame number mismatch'

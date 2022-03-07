@@ -1,6 +1,4 @@
-# Calibration script
-# import vm_preproc as vmp
-# import vedb_store
+# Full pipelines for gaze estimation
 import numpy as np
 import tqdm
 import tqdm.notebook
@@ -12,7 +10,7 @@ import os
 
 from . import utils
 from .options import config
-
+from .calibration import Calibration
 
 
 
@@ -21,7 +19,7 @@ PYDRA_OUTPUT_DIR = config.get('paths', 'pydra_cache') # '/pomcloud0/vedb/pydra_c
 BASE_OUTPUT_DIR = config.get('paths', 'output_dir') # '/pomcloud0/vedb/processed/'
 PARAM_DIR = os.path.join(os.path.split(__file__)[0], 'config/')
 
-
+### --- Utilities --- ###
 def is_notebook():
     """Test whether code is being run in a jupyter notebook or not"""
     try:
@@ -69,15 +67,15 @@ def get_function(function_name):
     return func
 
 
-
-# @pydra.mark.task
-# @pydra.mark.annotate({'return':{'pupil_locations': ty.Dict}})
-# def calibration_step(session_folder, params, eye='left', db_name=None):
-#     pass
+### --- Pipeline steps --- ###
+@pydra.mark.task
+def select(x_list, index):
+    """Utility to choose one of multiple outputs from a step for input to the next step"""
+    return x_list[index]
 
 @pydra.mark.task
 @pydra.mark.annotate({'return': {'pupil_locations': typing.Any}})
-def pupil_detection_step(session_folder, 
+def pupil_detection(session_folder, 
         fn, 
         param_tag, 
         eye='left', 
@@ -122,6 +120,8 @@ def pupil_detection_step(session_folder,
                                    eye=eye,
                                    session=session._id,
                                    params=param_dict._id)
+            if is_verbose:
+                print("FOUND DETECTED PUPILS.")
             return pupil_data.fname
         except:
             # Not yet run
@@ -165,7 +165,7 @@ def pupil_detection_step(session_folder,
             eye=eye,
             failed=failed,
             params=param_dict,
-            tag=param_dict.tag + '_%s' % eye,
+            tag=param_dict.tag,
             dbi=dbi,
             _id=dbi.get_uuid())
         fname = pup_doc.fname
@@ -182,7 +182,7 @@ def pupil_detection_step(session_folder,
 
 @pydra.mark.task
 @pydra.mark.annotate({'return': {'marker_locations': typing.Any}})
-def marker_detection_step(session_folder,
+def marker_detection(session_folder,
                           fn,
                           param_tag,
                           db_tag=None,
@@ -225,6 +225,8 @@ def marker_detection_step(session_folder,
                 detection_params=param_dict._id,
                 tag=db_tag,
                 epoch='all')
+            if is_verbose:
+                print("FOUND DETECTED MARKERS.")
             return marker_data.fname
         except:
             # Not yet run
@@ -278,7 +280,7 @@ def marker_detection_step(session_folder,
 
 @pydra.mark.task
 @pydra.mark.annotate({'return': {'marker_locations': typing.List}})
-def marker_filtering_step(marker_fname,
+def marker_filtering(marker_fname,
                           session_folder,
                           fn,
                           param_tag,
@@ -302,8 +304,6 @@ def marker_filtering_step(marker_fname,
         # Find components
         try:
             # Find session to process
-            if is_verbose:
-                print("> Searching for session...")
             session = dbi.query(1, type='Session', folder=session_folder)
             session.db_load()
             # Find input arguments for processing
@@ -470,8 +470,8 @@ def compute_calibration(marker_fname,
         markers.db_load()
         if is_verbose:
             print("> Searching for pupil locations...")
-        pupils = [dbi.query(1, type='PupilDetection', fname=pf) for pf in pupil_fnames]
-        for pup in pupils:
+        pupil_docs = [dbi.query(1, type='PupilDetection', fname=pf) for pf in pupil_fnames]
+        for pup in pupil_docs:
             pup.db_load()
         # Get parameters
         if is_verbose:
@@ -485,7 +485,7 @@ def compute_calibration(marker_fname,
                 type='Calibration',
                 calibration_class=calibration_class,
                 session=session._id,
-                pupil_detection=[pup._id for pup in pupils],
+                pupil_detection=[pup._id for pup in pupil_docs],
                 marker_detection=markers._id,
                 params=calibration_params._id,
                 eye=eye,
@@ -494,7 +494,7 @@ def compute_calibration(marker_fname,
             return calib_doc.fname
         except:
             marker_data = markers.data
-            pupil_data = [p.data for p in pupils]
+            pupil_data = [p.data for p in pupil_docs]
             kwargs = calibration_params.params
             vdims = session.recording_system.world_camera.resolution
     else:
@@ -543,7 +543,7 @@ def compute_calibration(marker_fname,
             cal_doc = vedb_store.Calibration(
                 calibration_class = calibration_class,
                 session=session,
-                pupil_detection=pupils,
+                pupil_detection=pupil_docs,
                 marker_detection=markers,
                 eye=eye,
                 epoch=markers.epoch,
@@ -556,20 +556,238 @@ def compute_calibration(marker_fname,
             cal_doc.save()
     return cal_doc.fname
 
-# map_gaze
+
+@pydra.mark.task
+@pydra.mark.annotate({'return': {'gaze_locations': typing.Any}})
+def map_gaze(session_folder,
+                    fn,
+                    pupil_fnames,
+                    calibration_fname,
+                    calibration_epoch,
+                    param_tag,
+                    eye=None,
+                    db_tag=None,
+                    db_name=None,
+                    is_verbose=False):
+    if is_verbose:
+        print("\n=== Computing gaze ===\n")
+    # Handle inputs
+    if not isinstance(pupil_fnames, (list, tuple)):
+        pupil_fnames = [pupil_fnames]
+
+    # Get default database if not provided
+    if db_name is not None:
+        # This relies on proper configuration of vedb_store, to
+        # know what hostname it should look for
+        dbi = vedb_store.docdb.getclient(dbname=db_name, is_verbose=False)
+        # Find session to process
+        session = dbi.query(1, type='Session', folder=session_folder)
+        dbi.is_verbose = is_verbose > 1
+        # Find input arguments for processing
+        if is_verbose:
+            print("> Searching for pupil locations...")
+        pupil_docs = [dbi.query(1, type='PupilDetection', fname=pf)
+                  for pf in pupil_fnames]
+        for pup in pupil_docs:
+            pup.db_load()
+        # Get Calibration & mapping parameters
+        if is_verbose:
+            print("> Searching for computed calibration...")
+        calib_doc = dbi.query(1, type='Calibration', fname=calibration_fname)
+        if is_verbose:
+            print("> Searching for gaze mapping parameters...")
+        mapping_params = dbi.query(1, type='ParamDictionary', tag=param_tag)
+        # Search for computed gaze
+        if is_verbose:
+            print("> Searching for computed gaze...")
+        try:
+            gaze_doc = dbi.query(1, 
+                type='Gaze', 
+                pupil_detection=[p._id for p in pupil_docs],
+                calibration=calib_doc._id,
+                calibration_epoch=calibration_epoch,
+                eye=eye,
+                params=mapping_params._id,
+                tag=db_tag)
+            print("FOUND GAZE.")
+            return gaze_doc.fname
+        except:
+            session.db_load()
+            # vdims? (video dimensions for gaze mapping?)
+            pupil_data = [p.data for p in pupil_docs]
+            calib_doc.load()
+            calibration = calib_doc.calibration
+            kwargs = mapping_params.params
+
+    else:
+        # Get marker file
+        if session_folder.endswith(os.sep):
+            session_folder = session_folder[:-1]
+        _, folder = os.path.split(session_folder)
+        pupil_fpaths = [os.path.join(
+            PYDRA_OUTPUT_DIR, folder, pupil_fname
+             ) for pupil_fname in pupil_fnames]
+        pupil_data = [dict(np.load(fp)) for fp in pupil_fpaths]
+        calibration = Calibration.load(calibration_fname)
+        # Load parameters from stored yaml files
+        param_fname = f'gaze_mapper-{param_tag}.yaml'
+        param_fpath = os.path.join(PARAM_DIR, param_fname)
+        kwargs = utils.read_yaml(param_fpath)
+        #vdims = file_io.var_size(os.path.join(
+        #    session_folder, 'world.mp4'))[2:0:-1]
+    
+    if len(pupil_data) == 1:
+        # only one eye
+        pupil_data = pupil_data[0]
+    
+    func = get_function(fn)
+    print("Computing gaze...")
+    gaze = func(calibration, pupil_data, **kwargs)
+
+    # Detect failure?
+    failed = False  # len(data) == 0
+    # Manage ouptut file
+    if db_name is None:
+        # FIX ME.
+        # won't get here, because I don't know what to do about paths...
+        sdir = os.path.join(PYDRA_OUTPUT_DIR, folder)
+        ctype = kwargs['calibration_type']
+        fname = f'gaze_{ctype}_{db_tag}.npz'
+        np.save(gaze, os.path.join(sdir, fname))
+    else:
+        if failed:
+            gaze = {}
+        gaze_doc = vedb_store.Gaze(
+            data=gaze,
+            session=session,
+            pupil_detection=pupil_docs,
+            calibration=calib_doc,
+            calibration_epoch=calibration_epoch,
+            eye=eye,
+            failed=failed,
+            params=mapping_params,
+            tag=db_tag,
+            dbi=dbi,
+            _id=dbi.get_uuid())
+        gaze_doc.save()
+    return gaze_doc.fname
+
+
+@pydra.mark.task
+@pydra.mark.annotate({'return': {'error': typing.Any}})
+def compute_error(session_folder,
+             fn,
+             gaze_fname,
+             marker_fname,
+             param_tag,
+             eye=None,
+             epoch=None,
+             db_tag=None,
+             db_name=None,
+             is_verbose=False):
+    if is_verbose:
+        print("\n=== Computing error ===\n")
+    # Get default database if not provided
+    if db_name is not None:
+        # This relies on proper configuration of vedb_store, to
+        # know what hostname it should look for
+        dbi = vedb_store.docdb.getclient(dbname=db_name, is_verbose=False)
+        # Find session to process
+        session = dbi.query(1, type='Session', folder=session_folder)
+        dbi.is_verbose = is_verbose > 1
+        # Find input arguments for processing
+        if is_verbose:
+            print("> Searching for gaze estimate...")
+        gaze_doc = dbi.query(1, type='Gaze', fname=gaze_fname)
+        # Get Calibration & mapping parameters
+        if is_verbose:
+            print("> Searching for detected (validation) markers...")
+        marker_doc = dbi.query(1, type='MarkerDetection', fname=marker_fname)
+        if is_verbose:
+            print("> Searching for error computation parameters...")
+        error_params = dbi.query(1, type='ParamDictionary', tag=param_tag)
+        # Search for computed gaze
+        if is_verbose:
+            print("> Searching for computed error...")
+        try:
+            error_doc = dbi.query(1,
+                                 type='GazeError',
+                                 gaze=gaze_doc._id,
+                                 marker_detection=marker_doc._id,
+                                 eye=eye,
+                                 #epoch=epoch, marker_doc will specify epoch...
+                                 params=error_params._id,
+                                 tag=db_tag)
+            print("FOUND ERROR ESTIMATE.")
+            return error_doc.fname
+        except:
+            session.db_load()
+            # vdims? (video dimensions for gaze mapping?)
+            marker_data = marker_doc.data
+            gaze_data = gaze_doc.data
+            kwargs = error_params.params
+
+    else:
+        # Get marker file
+        if session_folder.endswith(os.sep):
+            session_folder = session_folder[:-1]
+        _, folder = os.path.split(session_folder)
+        gaze_fpath = os.path.join(PYDRA_OUTPUT_DIR, folder, gaze_fname)
+        gaze_data = dict(np.load(gaze_fpath))
+        marker_fpath = os.path.join(PYDRA_OUTPUT_DIR, folder, marker_fname)
+        marker_data = dict(np.load(marker_fpath))
+        # Load parameters from stored yaml files
+        param_fname = f'compute_error-{param_tag}.yaml'
+        param_fpath = os.path.join(PARAM_DIR, param_fname)
+        kwargs = utils.read_yaml(param_fpath)
+        #vdims = file_io.var_size(os.path.join(
+        #    session_folder, 'world.mp4'))[2:0:-1]
+
+    func = get_function(fn)
+    print("Computing error...")
+    error = func(marker_data, gaze_data, **kwargs)
+
+    # Detect failure?
+    failed = False  # len(data) == 0
+    # Manage ouptut file
+    if db_name is None:        
+        sdir = os.path.join(PYDRA_OUTPUT_DIR, folder)
+        fname = f'error_{db_tag}_epoch{epoch}.npz'
+        np.save(error, os.path.join(sdir, fname))
+    else:
+        if failed:
+            error = {}
+        error_doc = vedb_store.GazeError(
+                data=error,
+                session=session,
+                gaze=gaze_doc,
+                marker_detection=marker_doc,
+                eye=eye,
+                epoch=marker_doc.epoch,
+                failed=failed,
+                params=error_params,
+                tag=db_tag,
+                dbi=dbi,
+                _id=dbi.get_uuid()
+                )
+        error_doc.save()
+    return error_doc.fname
+
 
 # correct pupil slippage
 
-# Workflows
-
-
+### --- Workflows --- ###
 def make_pipeline(session,
                   pupil_param_tag='plab_default',
+                  pupil_drift_param_tag=None,
                   cal_marker_param_tag='circles_halfres',
-                  val_marker_param_tag=None,
+                  val_marker_param_tag='checkerboard_halfres',
                   cal_marker_filter_param_tag='cluster_default',
+                  val_marker_filter_param_tag='basic_split',
                   calib_param_tag='monocular_pl_default',
-                  mapping_param_tag=None,
+                  mapping_param_tag='default_mapper',
+                  error_param_tag='smooth_tps_default',
+                  calibration_epoch=0,
                   db_name='vedb_test',
                   is_verbose=False,
                   ):
@@ -588,21 +806,29 @@ def make_pipeline(session,
     if cal_marker_filter_param_tag is not None:
         cal_marker_filter_params = dbi.query(
             1, type='ParamDictionary', tag=cal_marker_filter_param_tag)
+    if val_marker_filter_param_tag is not None:
+        val_marker_filter_params = dbi.query(
+            1, type='ParamDictionary', tag=val_marker_filter_param_tag)
     if calib_param_tag is not None:
         calib_params = dbi.query(
             1, type='ParamDictionary', tag=calib_param_tag)
     if mapping_param_tag is not None:
         mapping_params = dbi.query(
             1, type='ParamDictionary', tag=mapping_param_tag)
+    if error_param_tag is not None:
+        error_params = dbi.query(
+            1, type='ParamDictionary', tag=error_param_tag)
     # Create workflow
     gaze_pipeline = pydra.Workflow(name='gaze_default', 
                                    input_spec=['folder', 'db_name'],
                                    folder=session.folder,
                                    db_name=db_name,
                                    )
-    if pupil_param_tag is not None:
-        # Left and right pupil detection
-        gaze_pipeline.add(pupil_detection_step(
+    # Pupil detection
+    if pupil_param_tag is None:
+        pupil_out = []
+    else:
+        gaze_pipeline.add(pupil_detection(
             name='pupil_left',
             session_folder=session.folder,  # gaze_pipeline.lzin.folder,
             fn=pupil_params.fn,
@@ -613,7 +839,7 @@ def make_pipeline(session,
             is_verbose=is_verbose,
             )
         )
-        gaze_pipeline.add(pupil_detection_step(
+        gaze_pipeline.add(pupil_detection(
             name='pupil_right',
             session_folder=session.folder,  # gaze_pipeline.lzin.folder,
             fn=pupil_params.fn,
@@ -624,9 +850,15 @@ def make_pipeline(session,
             is_verbose=is_verbose,
             )
         )
+        pupil_out = [
+            ("pupil_left", 
+             gaze_pipeline.pupil_left.lzout.pupil_locations),
+             ("pupil_right",
+             gaze_pipeline.pupil_right.lzout.pupil_locations),
+            ]
+    # Calibration marker detection
     if cal_marker_param_tag is not None:
-        # Calibration marker detection
-        gaze_pipeline.add(marker_detection_step(
+        gaze_pipeline.add(marker_detection(
             name='calibration_detection',
             session_folder=session.folder,  # gaze_pipeline.lzin.folder,
             fn=cal_marker_params.fn,
@@ -636,12 +868,17 @@ def make_pipeline(session,
             db_name=db_name,  # gaze_pipeline.lzin.db_name,
             is_verbose=is_verbose,)
         )
+        calibration_marker_out = [("calibration_marker",
+                                   gaze_pipeline.calibration_detection.lzout.marker_locations), ]
+    else:
+        calibration_marker_out = []
+    # Filtering out spurious calibration marker detections
     if cal_marker_filter_param_tag is None:
         cal_filter_out = []
     else:
         if cal_marker_param_tag is None:
             raise ValueError("Must specify cal_marker_param_tag to conduct calibration marker filtering!")
-        gaze_pipeline.add(marker_filtering_step(
+        gaze_pipeline.add(marker_filtering(
             name='calibration_marker_filtering',
             marker_fname=gaze_pipeline.calibration_detection.lzout.marker_locations,
             session_folder=session.folder,  # gaze_pipeline.lzin.folder,
@@ -655,15 +892,20 @@ def make_pipeline(session,
         )
         cal_filter_out = [("calibration_epochs",
                           gaze_pipeline.calibration_marker_filtering.lzout.marker_locations),]
+    # Computing calibration 
     if calib_param_tag is None:
         calibration_out = []
     else:
         if any([x is None for x in [pupil_param_tag, cal_marker_param_tag, cal_marker_filter_param_tag]]):
             raise ValueError("Must specify tags for all previous steps to compute calibration!")
+        # Choose epoch
+        gaze_pipeline.add(select(name='cal_epoch_choice',
+                                 x_list=gaze_pipeline.calibration_marker_filtering.lzout.marker_locations,
+                                 index=calibration_epoch))
         if 'binocular' in calib_param_tag:
             gaze_pipeline.add(compute_calibration(
-                name='calibration',
-                marker_fname=gaze_pipeline.calibration_marker_filtering.lzout.marker_locations,
+                name='calibration_both',
+                marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
                 pupil_fnames=[gaze_pipeline.pupil_left.lzout.pupil_locations,
                               gaze_pipeline.pupil_right.lzout.pupil_locations, ],
                 session_folder=session.folder,
@@ -676,16 +918,16 @@ def make_pipeline(session,
                                 calib_param_tag,]),
                 db_name=db_name,
                 is_verbose=is_verbose,
-                ).split('marker_fname')
+                )
             )
-            calibration_out = [('calibration', gaze_pipeline.calibration.lzout.calibration_file)]
+            calibration_out = [('calibration_both', gaze_pipeline.calibration_both.lzout.calibration_file)]
 
         elif 'monocular' in calib_param_tag:
             # There may be a more compact way to do this with a pydra splitter, 
             # but I can't see how w/ the extra kwarg for `eye`
             gaze_pipeline.add(compute_calibration(
                 name='calibration_left',
-                marker_fname=gaze_pipeline.calibration_marker_filtering.lzout.marker_locations,
+                marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
                 pupil_fnames=gaze_pipeline.pupil_left.lzout.pupil_locations,
                 session_folder=session.folder,
                 calibration_class=calib_params.fn,
@@ -697,11 +939,11 @@ def make_pipeline(session,
                                 calib_param_tag, ]),
                 db_name=db_name,
                 is_verbose=is_verbose,
-            ).split('marker_fname')
+            )
             )
             gaze_pipeline.add(compute_calibration(
                 name='calibration_right',
-                marker_fname=gaze_pipeline.calibration_marker_filtering.lzout.marker_locations,
+                marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
                 pupil_fnames=gaze_pipeline.pupil_right.lzout.pupil_locations,
                 session_folder=session.folder,
                 calibration_class=calib_params.fn,
@@ -713,13 +955,53 @@ def make_pipeline(session,
                                 calib_param_tag, ]),
                 db_name=db_name,
                 is_verbose=is_verbose,
-            ).split('marker_fname')
+            )
             )
             calibration_out = [('calibration_left',gaze_pipeline.calibration_left.lzout.calibration_file), 
                                ('calibration_right',gaze_pipeline.calibration_right.lzout.calibration_file, )]
+        else:
+            raise ValueError(f"known calbration tag {calib_param_tag}")
+    # Mapping gaze
+    if mapping_params is None:
+        gaze_out = []
+    else:
+        gaze_tags = [x for x in [pupil_param_tag,
+                                 pupil_drift_param_tag,
+                                 cal_marker_param_tag,
+                                 cal_marker_filter_param_tag,
+                                 calib_param_tag,
+                                 mapping_param_tag] if x is not None]
+        gaze_db_tag = '-'.join(gaze_tags)
+        if 'monocular' in calib_param_tag:
+            eyes = ['left', 'right']
+            pupil_fnames =  [gaze_pipeline.pupil_left.lzout.pupil_locations,
+                             gaze_pipeline.pupil_right.lzout.pupil_locations, ]
+        else:
+            eyes = ['both']
+            pupil_fnames = [[gaze_pipeline.pupil_left.lzout.pupil_locations,
+                           gaze_pipeline.pupil_right.lzout.pupil_locations, ]]
+        gaze_out = []
+        for e, eye in enumerate(eyes):
+            gaze_name = 'gaze_%s'%eye
+            gaze_pipeline.add(map_gaze(
+                name=gaze_name,
+                session_folder=session.folder,
+                fn=mapping_params.fn,
+                pupil_fnames=pupil_fnames[e],
+                calibration_fname=calibration_out[e][1],
+                calibration_epoch=calibration_epoch,
+                param_tag=mapping_param_tag,
+                eye=eye,
+                db_tag=gaze_db_tag,
+                db_name=db_name,
+                is_verbose=is_verbose)
+                )
+            gaze_out.append((gaze_name, getattr(gaze_pipeline, gaze_name).lzout.gaze_locations))
 
-    if val_marker_param_tag is not None:
-        gaze_pipeline.add(marker_detection_step(
+    if val_marker_param_tag is None:
+        validation_marker_out = []
+    else:
+        gaze_pipeline.add(marker_detection(
             name='validation_detection',
             session_folder=session.folder,
             fn=val_marker_params.fn,
@@ -728,14 +1010,66 @@ def make_pipeline(session,
             marker_type='checkerboard',
             db_name=db_name,)
         )
+        validation_marker_out = [('validation_marker', 
+            gaze_pipeline.validation_detection.lzout.marker_locations),]
+    if val_marker_filter_param_tag is None:
+        val_filter_out = []
+    else:
+        if val_marker_param_tag is None:
+            raise ValueError(
+                "Must specify val_marker_param_tag to conduct validation marker filtering!")
+        gaze_pipeline.add(marker_filtering(
+            name='validation_marker_filtering',
+            marker_fname=gaze_pipeline.validation_detection.lzout.marker_locations,
+            session_folder=session.folder,  # gaze_pipeline.lzin.folder,
+            fn=val_marker_filter_params.fn,
+            param_tag=val_marker_filter_param_tag,
+            db_tag='-'.join([val_marker_param_tag,
+                            val_marker_filter_param_tag]),
+            marker_type='checkerboard',
+            db_name=db_name,
+            is_verbose=is_verbose,
+        )
+        )
+        val_filter_out = [("validation_epochs",
+                          gaze_pipeline.validation_marker_filtering.lzout.marker_locations), ]
 
-    gaze_pipeline.set_output([("pupil_left", 
-                               gaze_pipeline.pupil_left.lzout.pupil_locations),
-                              ("pupil_right",
-                               gaze_pipeline.pupil_right.lzout.pupil_locations),
-                              ("calibration_marker",
-                               gaze_pipeline.calibration_detection.lzout.marker_locations),
-                              ] + cal_filter_out + calibration_out)
+    
+    error_out = []
+    if error_param_tag is not None:
+        if any([x is None for x in [pupil_param_tag, 
+                                    cal_marker_param_tag, 
+                                    cal_marker_filter_param_tag,
+                                    val_marker_param_tag,
+                                    val_marker_filter_param_tag,
+                                    calib_param_tag,
+                                    mapping_param_tag,
+                                    ]]):
+            raise ValueError("To compute gaze error, all other steps must be specified")
+        # 'eyes' defined above in calibration computation, and all steps must run
+        # to compute error, so it will be defined.
+        for e, eye in enumerate(eyes):
+            error_name = f'compute_error_{eye}'
+            gaze_pipeline.add(compute_error(
+                name=error_name,
+                session_folder=session.folder,  # gaze_pipeline.lzin.folder,
+                marker_fname=gaze_pipeline.validation_marker_filtering.lzout.marker_locations,
+                gaze_fname=gaze_out[e][1],
+                eye=eye,
+                # epoch=epoch, # Tricky to do this right, haven't found a way yet.
+                fn=error_params.fn,
+                param_tag=error_param_tag,
+                db_tag='-'.join([gaze_db_tag, val_marker_param_tag,
+                                val_marker_filter_param_tag,]),
+                db_name=db_name,
+                is_verbose=is_verbose,
+            ).split('marker_fname')
+            )
+            error_out.append(
+                (error_name, getattr(gaze_pipeline, error_name).lzout.error))
+
+    gaze_pipeline.set_output(pupil_out + calibration_marker_out + cal_filter_out + \
+        validation_marker_out + val_filter_out + calibration_out + gaze_out) # + error_out)
 
     return gaze_pipeline
 """

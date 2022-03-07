@@ -19,6 +19,7 @@ from .utils import (
     dictlist_to_arraydict,
     read_yaml,
 )
+from .visualization import colormap_2d
 
 from pupil_recording_interface.externals.data_processing import (
     _filter_pupil_list_by_confidence,
@@ -351,7 +352,7 @@ class Calibration(object):
             gaze = self._mapper.map_batch(pupil_list)
             # Convert back to array of dictionaries & reformat
             gaze_array = dictlist_to_arraydict(gaze)
-            gaze_array['position'] = gaze_array.pop('norm_pos')
+            #gaze_array['norm_pos'] = gaze_array.pop('norm_pos')
         elif self.calibration_type == 'monocular_pl':
             # Mapper takes two inputs: normalized pupil x and y position
             x, y = pupil_arrays['norm_pos'].T
@@ -359,13 +360,13 @@ class Calibration(object):
             # Transpose output so time is the first dimension
             gaze = np.vstack(gaze).T
             gaze_array = dict(timestamp=pupil_arrays['timestamp'],
-                              position=gaze)
+                              norm_pos=gaze)
             if 'confidence' in pupil_arrays:
                 gaze_array['confidence']=pupil_arrays['confidence']
         elif self.calibration_type == 'monocular_tps':
             gaze = self._mapper(pupil_arrays)
             gaze_array = dict(timestamp=pupil_arrays['timestamp'],
-                              position=gaze)
+                              norm_pos=gaze)
             if 'confidence' in pupil_arrays:
                 gaze_array['confidence'] = pupil_arrays['confidence']
 
@@ -374,7 +375,7 @@ class Calibration(object):
         elif return_type == 'dictlist':
             return arraydict_to_dictlist(gaze_array)            
         elif return_type == 'array':
-            return gaze_array['position']
+            return gaze_array['norm_pos']
 
     @property
     def calibration_data(self):
@@ -428,6 +429,8 @@ class Calibration(object):
                          n_vertical_lines=None,
                          n_points=40,
                          point_size=3,
+                         show_data=False,
+                         data_scale=20,
                          sc=0.1,
                          color=((1.0, 0.9, 0),),
                          ax_world='new',
@@ -479,7 +482,7 @@ class Calibration(object):
                 gaze['right'] = [
                     g for g in gaze_binocular if g['base_data'][0]['id'] == 1]
                 gaze['right'] = gaze_utils.dictlist_to_arraydict(gaze_right)
-                grid_array = gaze[eye]['position']
+                grid_array = gaze[eye]['norm_pos']
         elif self.calibration_type in ('monocular_pl', 'monocular_tps'):
             grid_pts_list = self._get_grid_points(
                 eye, n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='arraydict')
@@ -487,19 +490,35 @@ class Calibration(object):
                 grid_array = None
             else:
                 grid_array = self.map(grid_pts_list, return_type='array')
+        x, y = self.calibration_arrays['norm_pos'].T
+        cols = colormap_2d(x, y)
+        ci = self.pupil_arrays['confidence'] > self.min_calibration_confidence
         if ax_world is not None:
             if ax_world == 'new':
                 fig, ax_world = plt.subplots()
-        if im is not None:
-            ax_world.imshow(im, extent=[0, 1, 1, 0])
-        if grid_array is not None:
-            ax_world.scatter(*grid_array.T, s=point_size, c=color)
-        ax_world.axis([0, 1, 1, 0])
+            if im is not None:
+                ax_world.imshow(im, extent=[0, 1, 1, 0])
+            if grid_array is not None:
+                ax_world.scatter(*grid_array.T, s=point_size, c=color)
+            if show_data:
+                sc_h = ax_world.scatter(x[ci], y[ci],
+                    s=self.pupil_arrays['confidence'][ci]*data_scale,
+                    c=cols[ci],
+                    )
+            ax_world.axis([0, 1, 1, 0])
         if ax_eye is not None:
             eye_array = self._get_grid_points(
                 eye, n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='array')
             if eye_array is not None:
                 ax_eye.scatter(*eye_array.T, s=point_size, c=color)
+            if show_data:
+                ax_eye.scatter(*self.pupil_arrays['norm_pos'][ci].T,
+                            s=self.pupil_arrays['confidence'][ci] * data_scale,
+                            # self.calibration_arrays['marker_cluster_index'][ci],
+                            c=cols[ci],
+                            #cmap=vedb_gaze.visualization.cluster_cmap,
+                            )
+
             #ax_eye.axis([0, 1, 1, 0])
 
     def _get_grid_points(self, eye=None, sc=0.1, n_horizontal_lines=10, n_vertical_lines=None, n_points=40, return_type='dictlist', min_possible_eye_points=10):

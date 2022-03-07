@@ -1,5 +1,7 @@
 import numpy as np
 from scipy import interpolate
+
+from vedb_gaze.utils import match_time_points
 try:
     import thinplate as tps # library here: 
 except ImportError:
@@ -11,15 +13,14 @@ except ImportError:
 
 
 
-def compute_error(marker_pos, 
-                  gaze_left, 
-                  gaze_right, 
+def compute_error(marker, 
+                  gaze, 
                   method='tps', 
                   error_smoothing_kernels=None, 
-                  vhres=None, 
-                  lambd=0.001, 
+                  vertical_horizontal_smooth_error_resolution=0.25, 
+                  lambd=1.0, 
                   extrapolate=False, 
-                  confidence_threshold=0, 
+                  min_pupil_confidence=0, 
                   image_resolution=(2048, 1536),
                   degrees_horiz=125,
                   degrees_vert=111,):
@@ -29,7 +30,33 @@ def compute_error(marker_pos,
     ----------
     marker : array
         estimated marker position and confidence; needs field 'norm_pos' only ()
+    gaze : _type_
+        _description_
+    method : str, optional
+        _description_, by default 'tps'
+    error_smoothing_kernels : _type_, optional
+        _description_, by default None
+    vertical_horizontal_smooth_error_resolution : _type_, optional
+        vertical and horizontal resolution of the smoothed error estimate. 
+        If None, defaults to 0.25 * `image_resolution`
+    lambd : float, optional
+        lambda parameter for thin plate spline smoothing, by default 0.001
+    extrapolate : bool, optional
+        flag for whether to estimate error outside of locations for validation
+        markers (i.e. whether to extrapolate), by default False
+    min_pupil_confidence : int, optional
+        _description_, by default 0
+    image_resolution : tuple, optional
+        _description_, by default (2048, 1536)
+    degrees_horiz : int, optional
+        _description_, by default 125
+    degrees_vert : int, optional
+        _description_, by default 111
 
+    Returns
+    -------
+    _type_
+        _description_
     """
     # Pixels per degree, coarse estimate for error computation
     # Default degrees are 125 x 111, this assumes all data is collected 
@@ -40,73 +67,83 @@ def compute_error(marker_pos,
     # Coarse, so it goes
     ppd = np.mean([vppd, hppd])
     
-    # < This section will vary with input format >
+    # Marker positions, matched in time
+    vp = marker['norm_pos'].copy()
     # Estimated gaze position, in normalized (0-1) coordinates
-    gl = gaze_left['position']
-    # Gaze left - confidence index (gl_ci)
-    gl_ci = gaze_left['confidence'] > confidence_threshold
-    gr = gaze_right['position']
-    # Gaze right - confidence index (gl_ci)
-    gr_ci = gaze_right['confidence'] > confidence_threshold
+    gz = gaze['norm_pos'].copy()
+    if len(gaze['timestamp']) != len(marker['timestamp']):
+        print('matching time points...')
+        gaze_matched = match_time_points(marker, gaze)
+        gz = gaze_matched['norm_pos']
+    else:
+        gaze_matched = gaze
+
+
+    # Gaze left - confidence index (gz_ci)
+    gz_ci = gaze_matched['confidence'] > min_pupil_confidence
     # < To here> 
 
-    vp_image = marker_pos * image_resolution
-    gl_image = gl * image_resolution
-    gr_image = gr * image_resolution
-
-    err_left = np.linalg.norm(gl_image[gl_ci] - vp_image[gl_ci], axis=1) / ppd
-    err_right = np.linalg.norm(gr_image[gr_ci] - vp_image[gr_ci], axis=1) / ppd
-    if vhres is None:
-        hres, vres = (np.array(image_resolution) * 0.25).astype(np.int)
+    vp_image = vp * np.array(image_resolution)
+    gz_image = gz * image_resolution
+    # Magnitude of error
+    gaze_err = np.linalg.norm(gz_image[gz_ci] - vp_image[gz_ci], axis=1) / ppd
+    # Angle of error
+    err_vector = gz_image[gz_ci] - vp_image[gz_ci]
+    gaze_err_angle = np.arctan2(*err_vector.T)
+    if vertical_horizontal_smooth_error_resolution is None:
+        vertical_horizontal_smooth_error_resolution = 0.25
+    if not isinstance(vertical_horizontal_smooth_error_resolution, (list, tuple)):
+        hres, vres = (np.array(image_resolution) * vertical_horizontal_smooth_error_resolution).astype(np.int)
     else:
-        vres, hres = vhres
+        vres, hres = vertical_horizontal_smooth_error_resolution
     # Interpolate to get error over whole image
     vpix = np.linspace(0, 1, vres)
     hpix = np.linspace(0, 1, hres)
     xg, yg = np.meshgrid(hpix, vpix)
     # Grid interpolation, basic
-    if gl_ci.sum() == 0:
-        tmp_l = np.ones_like(xg) * np.nan
+    if gz_ci.sum() == 0:
+        tmp = np.ones_like(xg) * np.nan
     else:
-        tmp_l = interpolate.griddata(vp[gl_ci], np.nan_to_num(err_left, nan=np.nanmean(err_left)), (xg, yg), method='cubic', fill_value=np.nan)
-    if gr_ci.sum() == 0:
-        tmp_r = np.ones_like(xg) * np.nan
-    else:
-        tmp_r = interpolate.griddata(vp[gr_ci], np.nan_to_num(err_right, nan=np.nanmean(err_right)), (xg, yg), method='cubic', fill_value=np.nan)
-
+        tmp = interpolate.griddata(vp[gz_ci], np.nan_to_num(gaze_err, nan=np.nanmean(gaze_err)), (xg, yg), method='cubic', fill_value=np.nan)
     if method=='griddata':
-        err_left_image = tmp_l
-        err_right_image = tmp_r
+        gaze_err_image = tmp
         if error_smoothing_kernels is not None:
-            tmp_l = np.nan_to_num(err_left_image, nan=np.nanmax(err_left))
-            tmp_r = np.nan_to_num(err_right_image, nan=np.nanmax(err_right))
-            tmp_l = cv2.blur(tmp_l, error_smoothing_kernels)
-            tmp_r = cv2.blur(tmp_r, error_smoothing_kernels)
-            tmp_l[np.isnan(err_left_image)] = np.nan
-            tmp_r[np.isnan(err_right_image)] = np.nan
-            err_left_image = tmp_l
-            err_right_image = tmp_r
-
+            tmp = np.nan_to_num(gaze_err_image, nan=np.nanmax(gaze_err))
+            tmp = cv2.blur(tmp, error_smoothing_kernels)
+            tmp[np.isnan(gaze_err_image)] = np.nan
+            gaze_err_image = tmp
     elif method=='tps':
-        x, y = marker_pos.T
+        x, y = vp.T
         # Left
-        to_fit_l = np.vstack([x[gl_ci], y[gl_ci], err_left]).T
-        theta_l = tps.TPS.fit(to_fit_l, lambd=lambd)
-        err_left_image = tps.TPS.z(np.vstack([xg.flatten(), yg.flatten()]).T, to_fit_l, theta_l).reshape(*xg.shape)
-        # Right
-        to_fit_r = np.vstack([x[gr_ci], y[gr_ci], err_right]).T
-        theta_r = tps.TPS.fit(to_fit_r, lambd=lambd)
-        err_right_image = tps.TPS.z(np.vstack([xg.flatten(), yg.flatten()]).T, to_fit_r, theta_r).reshape(*xg.shape)
+        to_fit = np.vstack([x[gz_ci], y[gz_ci], gaze_err]).T
+        theta = tps.TPS.fit(to_fit, lambd=lambd)
+        gaze_err_image = tps.TPS.z(np.vstack([xg.flatten(), yg.flatten()]).T, to_fit, theta).reshape(*xg.shape)
         if not extrapolate:
-            err_left_image[np.isnan(tmp_l)] = np.nan
-            err_right_image[np.isnan(tmp_r)] = np.nan
-            
-    return dict(left=err_left, 
-                right=err_right, 
-                left_image=err_left_image, 
-                right_image=err_right_image,
-                left_marker_pos=marker_pos[gl_ci],
-                right_marker_pos=marker_pos[gr_ci],
+            gaze_err_image[np.isnan(tmp)] = np.nan
+    # Do not allow any error values lower than minimum estimated error
+    gaze_err_image = np.maximum(gaze_err_image, np.min(gaze_err))
+    # Compute weighted error for whole session
+    gx, gy = gaze['norm_pos'].T
+    ny, nx = xg.shape
+    bin_x = np.linspace(0, 1, nx+1)
+    bin_y = np.linspace(0, 1, ny+1)
+    hst, bin_x_, bin_y_ = np.histogram2d(gx, gy, [bin_x, bin_y])
+    hst = hst.T
+    hst_pct = hst / hst.sum()
+    total_gaze_points_in_image = hst.sum()
+    total_interpolated_gaze_points = np.sum(hst[~np.isnan(gaze_err_image)])
+    total_extrapolated_gaze_points = np.sum(hst[np.isnan(gaze_err_image)])
+    gaze_err_weighted = np.nansum((hst_pct) * gaze_err_image) / \
+        (total_interpolated_gaze_points / total_gaze_points_in_image)
+    fraction_excluded = total_extrapolated_gaze_points / total_gaze_points_in_image
+    
+    return dict(gaze_err=gaze_err, 
+                gaze_err_angle=gaze_err_angle,
+                gaze_err_image=gaze_err_image,
+                gaze_err_weighted=gaze_err_weighted,
+                gaze_fraction_excluded=fraction_excluded,
+                gaze_matched=gz[gz_ci],
+                marker=marker['norm_pos'][gz_ci],
                 xgrid=xg,
                 ygrid=yg)
 

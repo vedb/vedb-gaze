@@ -1,0 +1,7 @@
+extrapolate: false
+lambd: 1.0
+method: tps
+min_pupil_confidence: 0.6
+vertical_horizontal_smooth_error_resolution:
+- 300
+- 400

@@ -18,10 +18,16 @@ def read_pl_gaze_csv(session_folder, output_id):
 
 
 def read_yaml(parameters_fpath):
+    """Thin wrapper to safely read a yaml file into a dictionary"""
     param_dict = dict()
-    with open(parameters_fpath,"r") as stream:
-        param_dict = yaml.safe_load(stream)
+    with open(parameters_fpath,"r") as fid:
+        param_dict = yaml.safe_load(fid)
     return param_dict
+
+def write_yaml(parameters, fpath):
+    """Thin wrapper to write a dictionary to a yaml file"""
+    with open(fpath, mode='w') as fid:
+        yaml.dump(pd.params, fid)
 
 
 def filter_list(lst, idx):
@@ -287,10 +293,10 @@ def compute_error(marker_pos,
 
     # < This section will vary with input format >
     # Estimated gaze position, in normalized (0-1) coordinates
-    gl = gaze_left['position']
+    gl = gaze_left['norm_pos']
     # Gaze left - confidence index (gl_ci)
     gl_ci = gaze_left['confidence'] > confidence_threshold
-    gr = gaze_right['position']
+    gr = gaze_right['norm_pos']
     # Gaze right - confidence index (gl_ci)
     gr_ci = gaze_right['confidence'] > confidence_threshold
     # < To here>
