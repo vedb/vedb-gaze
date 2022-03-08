@@ -965,7 +965,7 @@ def make_pipeline(session,
         else:
             raise ValueError(f"known calbration tag {calib_param_tag}")
     # Mapping gaze
-    if mapping_params is None:
+    if mapping_param_tag is None:
         gaze_out = []
     else:
         gaze_tags = [x for x in [pupil_param_tag,
