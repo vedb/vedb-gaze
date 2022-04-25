@@ -80,7 +80,7 @@ def unique(seq, idfun=None):
     return result, seen
 
 
-def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
+def match_time_points(*data, fn=np.median, window=None):
     """Compute gaze position across matched time points
     
     Currently selects all gaze points within half a video frame of 
@@ -91,20 +91,21 @@ def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
     data that are e.g. dictionaries. These must be removed before 
     calling this function for now. 
     """
-    if (window is None) and (all_timestamps is not None):
-        # Make window width half median frame rate, by default
-        wt_frame_time = np.median(np.diff(all_timestamps))
-        window = wt_frame_time / 2
-    marker_time = data[0]['timestamp']
-    #print(marker_time)
-    # marker time is at the frame rate of the world camera, which
-    # captured the markers
+    if window is None:
+        # Overwite any function argument if window is set to none;
+        # this will do nearest-frame resampling
+        def fn(x, axis=None):
+            return x
+    # Timestamps for first input are used as a reference
+    reference_time = data[0]['timestamp']
+    # Preallocate output list
     output = []
+    # Loop over all subsequent fields of data
     for d in data[1:]:
         t = d['timestamp'].copy()
-        new_dict = dict(timestamp=marker_time)
-        #print(new_dict)
-        for i, frame_time in enumerate(marker_time):
+        new_dict = dict(timestamp=reference_time)
+        # Loop over all timestamps in time reference
+        for i, frame_time in enumerate(reference_time):
             # Preallocate lists
             if i == 0:
                 for k, v in d.items():
@@ -112,16 +113,16 @@ def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
                         continue
                     shape = v.shape
                     new_dict[k] = np.zeros(
-                        (len(marker_time),) + shape[1:], dtype=v.dtype)
+                        (len(reference_time),) + shape[1:], dtype=v.dtype)
             if window is None:
+                # Nearest frame selection
                 fr = np.argmin(np.abs(t - frame_time))
                 time_index = np.zeros_like(t) > 0
                 time_index[fr] = True
-
-                def fn(x, axis=None):
-                    return x
             else:
+                # Selection of all frames within window
                 time_index = np.abs(t - frame_time) < window
+            # Loop over fields of inputs
             for k, v in d.items():
                 if k == 'timestamp':
                     continue
@@ -129,17 +130,18 @@ def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
                     frame = fn(v[time_index], axis=0)
                     new_dict[k][i] = frame
                 except:
-                    # Field does not support
-                    #print(k)
+                    # Field does not support indexing of this kind;
+                    # This should probably raise a warning at least...
                     pass
+        # Remove any keys with all fields deleted
         keys = list(d.keys())
         for k in keys:
             if len(new_dict[k]) == 0:
                 _ = new_dict.pop(k)
             else:
-                watnow = np.asarray(new_dict[k])
                 new_dict[k] = np.asarray(new_dict[k])
         output.append(new_dict)
+    # Flexible output, depending on number of inputs
     if len(output) == 1:
         return output[0]
     else:

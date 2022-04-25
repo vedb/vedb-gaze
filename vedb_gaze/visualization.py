@@ -1,6 +1,10 @@
+from matplotlib import animation
+from vedb_gaze.utils import match_time_points
+from sklearn import pipeline
 import plot_utils
 import copy
 import numpy as np
+from scipy import interpolate
 import matplotlib.pyplot as plt
 from matplotlib import animation, patches, colors, gridspec
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
@@ -131,15 +135,17 @@ def make_world_eye_axes(eye_left_ax=True, eye_right_ax=True, fig_scale=5):
 
 def make_dot_overlay_animation(
     video_data,
-    dot_locations,
-    dot_timestamps=None,
-    video_timestamps=None,
+    video_timestamps,
+    *dot_data,
+    downsampling_function=np.median,
+    window=None,
     dot_widths=None,
     dot_colors=None,
     dot_labels=None,
     dot_markers=None,
     figsize=None,
     fps=60,
+    accumulate=False,
     **kwargs
 ):
     """Make an animated plot of dots moving around on a video image
@@ -152,21 +158,22 @@ def make_dot_overlay_animation(
     ----------
     video_data : array
         stack of video_data, (time, vdim, hdim, [c]), in a format showable by plt.imshow()
-    dot_locations : array
+    video_timestamps : array
+        [n_frames] timestamps for video frames; optional, see `dot_timestamps`
+    dot_data : dict
         [n_dots, n_frames, xy]: locations of dots to plot, either in normalized (0-1 for
         both x and y) coordinates or in pixel coordinates (with pixel dimensions matching
         the size of the video)
-    dot_timestamps : array
+    xx dot_timestamps : array
         [n_dots, n_dot_frames] timestamps for dots to plot; optional if a dot location is
         specified for each frame. However, if `dot_timestamps` do not match
         `video_timestamps`, dot_locations are resampled (simple block average) to match
         with video frames using these timestamps.
-    video_timestamps : array
-        [n_frames] timestamps for video frames; optional, see `dot_timestamps`
+    
     dot_widths : scalar or list
         size(s) for dots to plot
     dot_colors : matplotlib colorspec (e.g. 'r' or [1, 0, 0]) or list of colorspecs
-        colors of dots to plot. Only allows one color across time for each dot (for now).
+        colors of dots to plot. 
     dot_labels : string or list of strings
         label per dot (for legend) NOT YET IMPLEMENTED.
     dot_markers : string or list of strings
@@ -188,10 +195,8 @@ def make_dot_overlay_animation(
         if len(x) == 1:
             x = x * n
         return x
-    dot_locs = dot_locations.copy()
-    # Inputs
-    if np.ndim(dot_locs) == 2:
-        dot_locs = dot_locs[np.newaxis, :]
+    n_dots = len(dot_data)
+    #dot_locs = dot_locations.copy()
     if dot_markers is None:
         dot_markers = "o"
 
@@ -200,38 +205,33 @@ def make_dot_overlay_animation(
     # interval is milliseconds; convert fps to milliseconds per frame
     interval = 1000 / fps
     # Setup
-    n_frames, y, x = video_data.shape[:3]
-    im_shape = (y, x)
-    aspect_ratio = x / y
+    n_frames, vdim, hdim = video_data.shape[:3]
+    im_shape = (vdim, hdim)
+    aspect_ratio = hdim / vdim
     if figsize is None:
         figsize = (5 * aspect_ratio, 5)
-    if np.nanmean(dot_locs) > 1:
-        dot_locs /= np.array([x, y])
     # Match up timestamps
-    if video_timestamps is not None:
-        mean_video_frame_time = np.mean(np.diff(video_timestamps))
-        # Need for loop over dots if some dots
-        # have different timestamps than others
-        tt = np.repeat(dot_timestamps[:, np.newaxis], len(video_timestamps), axis=1)
-        tdif = video_timestamps - tt
-        t_i, vframe_i = np.nonzero(np.abs(tdif) < (mean_video_frame_time / 2))
-        # Downsample dot locations
-        vframes = np.unique(vframe_i)
-        #print(vframes)
-        n_dots_ds = len(vframes)
-        #print(n_dots_ds)
-        dot_locs_ds = np.hstack(
-            [
-                np.median(dot_locs[:, t_i[vframe_i == j]], axis=1)[:, None, :]
-                for j in vframes
-            ]
-        )
-        # print(dot_locs_ds.shape)
-    else:
-        dot_locs_ds = dot_locs
-        vframes = np.arange(n_frames)
+    dots_matched = []
+    for this_dot in dot_data:
+        # not all, because often we use e.g. first and last timestamps of calibration epoch to select video time,
+        # so the video time will be 2 frames shorter...
+        acceptable_wiggle_room = 5  # frames in dot timestamps that are not in video
+        if (np.sum(np.in1d(this_dot['timestamp'], video_timestamps)) - len(this_dot['timestamp'])) < acceptable_wiggle_room:
+            print("Timestamps already in video timestamps")
+            dots_matched.append(this_dot)
+        else:
+            tmp = match_time_points(dict(
+                timestamp=video_timestamps), this_dot, window=window, fn=downsampling_function)
+            dots_matched.append(tmp)
+    dots_matched = tuple(dots_matched)
+    vframes = []
+    for this_dot in dots_matched:
+        tmp, = np.nonzero(np.in1d(video_timestamps, this_dot['timestamp']))
+        print("n frames detected in video is:")
+        print(len(tmp))
+        vframes.append(tmp)
     # Plotting args
-    n_dots, n_dot_frames, _ = dot_locs_ds.shape
+    #n_dots, n_dot_frames, _ = dot_locs_ds.shape
     dot_colors = prep_input(dot_colors, n_dots)
     dot_widths = prep_input(dot_widths, n_dots)
     dot_markers = prep_input(dot_markers, n_dots)
@@ -243,35 +243,40 @@ def make_dot_overlay_animation(
     ax.set_xticks([])
     ax.set_yticks([])
     dots = []
-    for dc, dw, dm, dl in zip(dot_colors, dot_widths, dot_markers, dot_labels):
-        tmp = plt.scatter(0.5, 0.5, s=dw, c=dc, marker=dm, label=dl)
+    for this_dot, dc, dw, dm, dl in zip(dots_matched, dot_colors, dot_widths, dot_markers, dot_labels):
+        tmp = plt.scatter(*this_dot['norm_pos'].T,
+                          s=dw, c=dc, marker=dm, label=dl)
         dots.append(tmp)
     artists = (im,) + tuple(dots)
     plt.close(fig.number)
     # initialization function: plot the background of each frame
+
     def init_func(fig, ax, artists):
-        for d in dots:
-            d.set_offsets([0.5, 0.5])
+        for j, d in enumerate(dots):
+            d.set_offsets(dots_matched[j]['norm_pos'][:1])
         im.set_array(np.zeros(im_shape))
         return artists
 
     # animation function. This is called sequentially
-    def update_func(i, artists, dot_locs, vframes):
+    def update_func(i, artists, dots_matched, vframes):
 
         artists[0].set_array(video_data[i])
-        # Also needs attention if different timecourses for different dots
+        # Loop over dots
         for j, artist in enumerate(artists[1:]):
-            # may end up being: if i in vframes[j]:
-            if i in vframes:
-                dot_i = vframes.tolist().index(i)
-                _ = artist.set_offsets(dot_locs[j, dot_i])
+            if i in vframes[j]:
+                dot_i = vframes[j].tolist().index(i)
+                if accumulate:
+                    _ = artist.set_offsets(dots_matched[j]['norm_pos'][:dot_i])
+                else:
+                    _ = artist.set_offsets(dots_matched[j]['norm_pos'][dot_i])
             else:
-                _ = artist.set_offsets([-1, -1])
+                if not accumulate:
+                    _ = artist.set_offsets([-1, -1])
         return artists
 
     init = partial(init_func, fig=fig, ax=ax, artists=artists)
     update = partial(
-        update_func, artists=artists, dot_locs=dot_locs_ds, vframes=vframes
+        update_func, artists=artists, dots_matched=dots_matched, vframes=vframes
     )
     # call the animator. blit=True means only re-draw the parts that have changed.
     anim = animation.FuncAnimation(
@@ -280,13 +285,16 @@ def make_dot_overlay_animation(
     return anim
 
 
-def show_ellipse(ellipse, img=None, ax=None, **kwargs):
+def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
     """Show opencv ellipse in matplotlib, optionally with image underlay
 
     Parameters
     ----------
     ellipse : dict
         dict of ellipse parameters derived from opencv, with fields:
+        * center: tuple (x, y)
+        * axes: tuple (x length, y length)
+        * angle: scalar, in degrees
     img : array
         underlay image to display
     ax : matplotlib axis
@@ -301,7 +309,7 @@ def show_ellipse(ellipse, img=None, ax=None, **kwargs):
     if img is not None:
         ax.imshow(img, cmap="gray")
     ax.add_patch(ell)
-    ax.scatter(ellipse["center"][0], ellipse["center"][1], color="r")
+    ax.scatter(ellipse["center"][0], ellipse["center"][1], color=center_color)
 
 
 def colormap_2d(
@@ -345,24 +353,24 @@ def colormap_2d(
     return colored
 
 
-def show_dots(mk, start=0, end=10, size=0.25, fps=30, video='world_camera', **kwargs):
+def show_dots(mk, start=0, end=10, size=0.25, fps=30, video='world_camera', accumulate=False, **kwargs):
     """Make an animation of detected markers as dots overlaid on video
     mk is a vedb_store class (MarkerDetection or PupilDetection so far)
     Set vdieo, size, frame rate according to what mk is!
     """
     mk.db_load()
     vtime, vdata = mk.session.load(video, time_idx=(start, end), size=size)
-    anim = make_dot_overlay_animation(vdata, 
-                                    mk.data['norm_pos'],
-                                    dot_timestamps=mk.timestamp,
-                                    video_timestamps=vtime,
-                                    fps=30,
-                                    **kwargs,
-                                    )
+    anim = make_dot_overlay_animation(vdata,
+                                      vtime + mk.session.start_time,
+                                      mk.data,
+                                      fps=fps,
+                                      accumulate=accumulate,
+                                      **kwargs,
+                                      )
     return anim
 
 
-def average_frames(ses, times, to_load='world_camera'):
+def average_frames(session, times, to_load='world_camera'):
     """Load and average frames that occur at a specified list of `times`
     
     Parameters
@@ -381,7 +389,7 @@ def average_frames(ses, times, to_load='world_camera'):
     """
     images = []
     for t0 in times:
-        timestamp, frames = ses.load(to_load, time_idx=[t0, t0 + 1])
+        timestamp, frames = session.load(to_load, time_idx=[t0, t0 + 1])
         images.append(frames[0])
     return np.array(images).mean(0).astype(frames.dtype)
 
@@ -501,9 +509,50 @@ def plot_error(err,
     return out
 
 
+def plot_error_markers(markers, gaze,
+                                confidence_threshold=0,
+                                ses=None,
+                                ax=None,
+                                n_images_to_average=4,
+                                do_gradients=True,
+                                # Blue # (0.95, 0.85, 0) # Yellow
+                                left_eye_color=(0.0, 0.0, 0.9),
+                                # Yellow # (1.00, 0.50, 0) # Orange
+                                right_eye_color=(0.95, 0.85, 0),
+                                marker_color=(1.0, 0, 0),  # Red
+                                ):
+    """Plot validation markers and gaze at relevant timepoints
+    
+    """
+    left_eye_cmap = (marker_color, left_eye_color)
+    right_eye_cmap = (marker_color, right_eye_color)
+
+    vt = markers['timestamp']
+    vp = markers['norm_pos']
+    gaze_left_markers, gaze_right_markers = match_time_points(
+        markers, gaze['left'], gaze['right'])
+    gl = gaze_left_markers['position']
+    gl_ci = gaze_left_markers['confidence'] > confidence_threshold
+    gr = gaze_right_markers['position']
+    gr_ci = gaze_right_markers['confidence'] > confidence_threshold
+    if (gl_ci.sum() < 10) or (gr_ci.sum() < 10):
+        print("Insufficient number of points retained after assessing pupil confidence for v epoch %d" % j)
+        return
+    if ax is None:
+        fig, ax = plt.subplots()
+    # Visualization of markersidation epochs w/ gaze
+    if ses is not None:
+        show_average_frames(ses, vt, n_images=n_images_to_average, ax=ax)
+    if do_gradients:
+        plot_utils.gradient_lines(
+            vp[gl_ci], gl[gl_ci], cmap=left_eye_cmap, ax=ax)
+        plot_utils.gradient_lines(
+            vp[gr_ci], gr[gr_ci], cmap=right_eye_cmap, ax=ax)
+    ax.set_title('%.1f minutes' % (vt[0]/60))
+
 def plot_error_interpolation(marker, gaze_err, xgrid, ygrid, gaze_err_image, vmin=0, vmax=None, ax=None,
                              cmap='viridis_r', azimuth=60, elevation=30, **kwargs):
-    """Summary
+    """Plot error surface for gaze in 3D
     
     Parameters
     ----------
@@ -674,7 +723,7 @@ def plot_epochs_db(ses,
     n_images_to_average = 3
     # Grid
     rows_per_epoch = 5  # 3 for video, 2 for eyes / accuracy
-    n_rows_top = 4  # validation / calibration; pupil confidence; pupil skewness; pupil images
+    n_rows_top = 5  # validation / calibration; pupil confidence; pupil skewness; pupil images
     n_rows_bottom = 0
     columns = 4 * 2
     ne = np.max(n_epochs)
@@ -693,7 +742,8 @@ def plot_epochs_db(ses,
     ax0a = fig.add_subplot(gs[0, :])
     if calibration_points_all is not None:
         plot_timestamps(
-            calibration_points_all.timestamp, ses.world_time, color='b', alpha=0.3, ax=ax0a)
+            calibration_points_all.timestamp, ses.world_time, color='gray', alpha=0.3, ax=ax0a,
+            label='Calibration (unfilt.)')
     plot_timestamps(np.hstack([ce.timestamp for ce in calibration_epochs]), ses.world_time,
                     color='b', alpha=0.6, ax=ax0a, label='Calibration')
     if validation_points_all is not None:
@@ -749,8 +799,8 @@ def plot_epochs_db(ses,
     ax0c.set_yticklabels(['L', 'R'])
 
     # World camera images
-    ax0d = fig.add_subplot(gs[3, :])
-    sample_times_world = sample_times[::2]
+    ax0d = fig.add_subplot(gs[3:5, :])
+    sample_times_world = sample_times[::4]
     sample_times = np.array(
         [s for s in sample_times if np.min(np.abs(ses.world_time-s)) < 1/20])
     world_cam = [ses.load('world_camera', time_idx=(t, t+1))[1][0]
@@ -838,7 +888,7 @@ def plot_epochs_db(ses,
             # Left eye error
             handles = plot_error(error[j], eye='left', gaze=gaze['left'], ax=ax_L,
                                  **err_kw)
-            set_axis_lines(ax_L, color=left_eye_col, lw=2)
+            plot_utils.set_axis_lines(ax_L, color=left_eye_col, lw=2)
             #[h_hst, h_im, h_contour, h_scatter]
             hst_im = handles[0]
             fig.colorbar(hst_im, orientation='horizontal',
@@ -846,14 +896,14 @@ def plot_epochs_db(ses,
             # Rigth eye error
             handles = plot_error(error[j], eye='right', gaze=gaze['right'], ax=ax_R,
                                  **err_kw)
-            set_axis_lines(ax_L, color=left_eye_col, lw=2)
+            plot_utils.set_axis_lines(ax_L, color=left_eye_col, lw=2)
             err_im = handles[1]
             try:
                 fig.colorbar(err_im, orientation='horizontal',
                              ax=ax_R, aspect=15, fraction=0.075)
             except:
                 print("session error is high, colorbar for error contours fails")
-            set_axis_lines(ax_R, color=right_eye_col, lw=2)
+            plot_utils.set_axis_lines(ax_R, color=right_eye_col, lw=2)
 
         for axx in [ax_L, ax_R]:
             axx.axis([0, 1, 1, 0])
@@ -871,7 +921,7 @@ def run_session_qc(session,
                    marker_tag_val='checkerboard_halfres',
                    marker_epoch_tag_cal='cluster_default',
                    marker_epoch_tag_val='basic_split',
-                   calibration_tag='plab_default-circles_halfres-cluster_default-monocular_pl_default',
+                   calibration_tag='monocular_pl_default',
                    calibration_epoch=0,
                    gaze_tag='default_mapping',
                    error_tag='tps_default',
@@ -883,81 +933,82 @@ def run_session_qc(session,
     ### --- Load all session elements --- ###
     session.db_load()
     # All calibration markers
-    try:
-        mk_cal = dbi.query(1, type='MarkerDetection',
-            epoch='all',
-            session=session._id,
-            tag=marker_tag_cal,
-            )
-    except:
-        mk_cal = None
-    # All epochs for calibration
-    try: 
-        epoch_cal = dbi.query(type='MarkerDetection',
-            session=session._id,
-            tag=f'{marker_tag_cal}-{marker_epoch_tag_cal}')
-        epoch_cal = sorted(epoch_cal, key=lambda x: x.epoch)
-    except:
-        epoch_cal = None
-    # All epochs for validation
-    try: 
-        epoch_val = dbi.query(type='MarkerDetection',
-                              session=session._id,
-                              tag=f'{marker_tag_val}-{marker_epoch_tag_val}')
-        epoch_val = sorted(epoch_val, key=lambda x: x.epoch)
-        # Re-assign epochs?
-        if re_assign_markers:
-            if n_cal > 1:
-                epoch_val.extend(epoch_cal[1:])
-                epoch_cal = epoch_cal[:1]
-    except:
-        epoch_val = None
-    # Calibration
-    calibration = {}
-    if 'monocular' in calibration_tag:
-        eyes = ['left', 'right']
-    else:
-        eyes = ['both']
-    try:
-        for eye in eyes:
-            tmp = dbi.query(1, type='Calibration', 
-                            tag=calibration_tag, 
-                            marker_detection=epoch_cal[calibration_epoch]._id,
-                            eye=eye, 
-                            epoch=calibration_epoch,
-                            session=session._id,
-                            )
-            tmp.load()
-            calibration[eye] = tmp
-    except:
-        raise
-        calibration = None
-    # Estimated gaze
-    gaze = {}
-    try:
-        for eye in eyes:
-            gaze[eye] = dbi.query(1, 
-                type='Gaze',
-                session=session._id,
-                tag=gaze_tag,
-                calibration=calibration[eye],
-                eye=eye,
-                pupil_detections=pupil_tag,)
-    except:
-        gaze = None
-    # Error
-    try:
-        err = []
-        for ve in epoch_val:
-            for eye in eyes:
-                tmp = dbi.query(1, type='GazeError', 
-                    marker_detection=ve,
-                    gaze=gaze[eye]._id,
-                    )
-                err.append(tmp)
-    except:
-        if len(err) < 1:
-            err = None
+    # try:
+    #     mk_cal = dbi.query(1, type='MarkerDetection',
+    #         epoch='all',
+    #         session=session._id,
+    #         tag=marker_tag_cal,
+    #         )
+    # except:
+    #     mk_cal = None
+    # # All epochs for calibration
+    # try: 
+    #     epoch_cal = dbi.query(type='MarkerDetection',
+    #         session=session._id,
+    #         tag=f'{marker_tag_cal}-{marker_epoch_tag_cal}')
+    #     epoch_cal = sorted(epoch_cal, key=lambda x: x.epoch)
+    # except:
+    #     epoch_cal = None
+    # # All epochs for validation
+    # try: 
+    #     epoch_val = dbi.query(type='MarkerDetection',
+    #                           session=session._id,
+    #                           tag=f'{marker_tag_val}-{marker_epoch_tag_val}')
+    #     epoch_val = sorted(epoch_val, key=lambda x: x.epoch)
+    #     # Re-assign epochs?
+    #     if re_assign_markers:
+    #         if n_cal > 1:
+    #             epoch_val.extend(epoch_cal[1:])
+    #             epoch_cal = epoch_cal[:1]
+    # except:
+    #     epoch_val = None
+    # # Calibration
+    # calibration = {}
+    # ctag = f'{marker_tag_val}-{marker_epoch_tag_val}'
+    # if 'monocular' in calibration_tag:
+    #     eyes = ['left', 'right']
+    # else:
+    #     eyes = ['both']
+    # try:
+    #     for eye in eyes:
+    #         tmp = dbi.query(1, type='Calibration', 
+    #                         tag=calibration_tag, 
+    #                         marker_detection=epoch_cal[calibration_epoch]._id,
+    #                         eye=eye, 
+    #                         epoch=calibration_epoch,
+    #                         session=session._id,
+    #                         )
+    #         tmp.load()
+    #         calibration[eye] = tmp
+    # except:
+    #     raise
+    #     calibration = None
+    # # Estimated gaze
+    # gaze = {}
+    # try:
+    #     for eye in eyes:
+    #         gaze[eye] = dbi.query(1, 
+    #             type='Gaze',
+    #             session=session._id,
+    #             tag=gaze_tag,
+    #             calibration=calibration[eye],
+    #             eye=eye,
+    #             pupil_detections=pupil_tag,)
+    # except:
+    #     gaze = None
+    # # Error
+    # try:
+    #     err = []
+    #     for ve in epoch_val:
+    #         for eye in eyes:
+    #             tmp = dbi.query(1, type='GazeError', 
+    #                 marker_detection=ve,
+    #                 gaze=gaze[eye]._id,
+    #                 )
+    #             err.append(tmp)
+    # except:
+    #     if len(err) < 1:
+    #         err = None
     # Find epochs
     n_cal = len(epoch_cal)
     print(">>> Found %d calibration epochs" % (n_cal))
@@ -979,23 +1030,365 @@ def run_session_qc(session,
     if sname is not None:
         fig.savefig(sname, dpi=dpi)
 
-# Read from config file
-gaze_latest = 'plab_default-circles_halfres-cluster_default-monocular_tps_default-default_mapper'
-def show_gaze_movie(session, 
-    gaze_tag=gaze_latest, 
-    eye='both', 
-    calibration_epoch=0,
-    is_verbose=False,
-    ):
-    """Make a movie with overlaid gaze trace(s)
-    
+
+def gaze_rect(gaze_position, hdim, vdim, ax=None, linewidth=1, edgecolor='r', **kwargs):
+    if ax is None:
+        ax = plt.gca()
+    # Create a Rectangle patch
+    gp = gaze_position - np.array([hdim, vdim]) / 2
+    rect = patches.Rectangle(gp, hdim, vdim,
+                             facecolor='none',
+                             edgecolor=edgecolor,
+                             linewidth=linewidth,
+                             **kwargs)
+    # Add the patch to the Axes
+    rh = ax.add_patch(rect)
+    return rh
+
+# Making gaze centered videos
+def _load_gaze_plot_elements(pipeline_elements,
+                             frame_idx=None,
+                             time_idx=None,
+                             world_size=(600, 800),
+                             eye_size=(200, 200),
+                             crop_size=(384, 384),
+                             crop_size_resize=None,
+                             tdelta=0.2,  # to help assure range of eye times is wider than range of world times for interpolation
+                             ):
+    """Example: 
+    world_camera, eye_left_ds, eye_right_ds, \
+        pupil_left_matched, pupil_right_matched, \
+        gaze_matched, gc_video = _load_gaze_plot_elements(session, time_idx=(60*8,60*8+20))
+
+    Parameters
+    ----------
+    session : _type_
+        _description_
+    frame_idx : _type_, optional
+        _description_, by default None
+    time_idx : _type_, optional
+        _description_, by default None
+    world_size : tuple, optional
+        _description_, by default (600, 800)
+    eye_size : tuple, optional
+        _description_, by default (200, 200)
+    eye : str, optional
+        _description_, by default 'left'
+    pupil_tag : str, optional
+        _description_, by default 'plab'
+    gaze_tag : str, optional
+        _description_, by default 'basic_mapping'
+    calibration_tag : str, optional
+        _description_, by default 'monocular_pl_default'
+    marker_type : str, optional
+        _description_, by default 'concentric_circle'
+    marker_epoch : int, optional
+        _description_, by default 0
+    marker_epoch_tag : str, optional
+        _description_, by default 'cluster_default'
+
+    Returns
+    -------
+    _type_
+        _description_
     """
-    # Set verbosity
-    verbosity = copy.copy(session.dbi.is_verbose)
-    session.dbi.is_verbose = is_verbose
-    # Retrieve gaze
-    gaze = session.dbi.query(type='Gaze', 
-        tag=gaze_tag, 
-        calibration_epoch=calibration_epoch,
-        session=session._id)
+    # Load world camera
+    if world_size is None:
+        print("Skipping world load...")
+        world_time = pipeline_elements['session'].world_time.copy()
+        if frame_idx is not None:
+            world_time = world_time[frame_idx[0]:frame_idx[1]]
+        elif time_idx is not None:
+            world_time = world_time[(world_time > time_idx[0]) & (world_time < time_idx[1])]
+        world_camera = None
+    else:
+        print('Loading world...')
+        world_time, world_camera = pipeline_elements['session'].load(
+        'world_camera', frame_idx=frame_idx, time_idx=time_idx, size=world_size)
     
+    # Load & temporally downsample eye videos
+    if eye_size is None:
+        eye_left_ds = None
+        eye_right_ds = None
+    else:
+        eye_left_time, eye_left_vid = pipeline_elements['session'].load('eye_left', time_idx=[
+                                            world_time[0]-tdelta, world_time[-1]+tdelta], size=eye_size)
+        eye_right_time, eye_right_vid = pipeline_elements['session'].load('eye_right', time_idx=[
+                                                world_time[0]-tdelta, world_time[-1]+tdelta], size=eye_size)
+        # Potentially revisit downsampling to make this just skip frames until nearest temporal match, so it can be 
+        # performed frame-by-frame rather than loaded in blocks...? 
+        downsampler_left = interpolate.interp1d(
+            eye_left_time, eye_left_vid, assume_sorted=True, kind='nearest', axis=0)
+        eye_left_ds = downsampler_left(world_time).astype(np.uint8)
+        downsampler_right = interpolate.interp1d(
+            eye_right_time, eye_right_vid, assume_sorted=True, kind='nearest', axis=0)
+        eye_right_ds = downsampler_right(world_time).astype(np.uint8)
+
+    # Load pupil estimation
+    pupil_left = pipeline_elements['pupil']['left'].data
+    pupil_right = pipeline_elements['pupil']['right'].data
+    pupil_left_matched, pupil_right_matched = match_time_points(dict(timestamp=world_time + pipeline_elements['session'].start_time),
+                                                                pupil_left,
+                                                                pupil_right,
+                                                                )
+    # Load gaze estimation
+    gaze = {}
+    gaze_matched = {}
+    for k in pipeline_elements['gaze'].keys():
+        if pipeline_elements['gaze'][k] is None:
+            gaze[k] = None
+            gaze_matched[k] = None
+        else:
+            gaze[k] = pipeline_elements['gaze'][k].data
+            gaze_matched[k] = match_time_points(
+                dict(timestamp=world_time + pipeline_elements['session'].start_time), gaze[k])
+            # Handle gaze failures here? Not for now...
+            #gg = gaze_matched[k]['norm_pos']
+            #gaze_matched[k]['norm_pos'][(gg >= 1) | (gg <= 0)] = np.nan
+    gc_video = {}
+    for k in pipeline_elements['gaze'].keys():
+        if crop_size is None:
+            gc_video[k] = None
+        else:
+            gc_video[k] = pipeline_elements['session'].load('world_camera', 
+                center=gaze_matched[k]['norm_pos'], 
+                crop_size=crop_size,
+                size=crop_size_resize,
+                frame_idx=frame_idx,
+                time_idx=time_idx)
+
+    return world_camera, eye_left_ds, eye_right_ds, pupil_left_matched, pupil_right_matched, gaze_matched, gc_video
+
+
+def load_pipeline_elements(session,
+                           pupil_tag='plab_default',
+                           calibration_tag='monocular_tps_default',
+                           cal_marker_tag='circles_halfres',
+                           cal_marker_epoch_tag='cluster_default',
+                           cal_marker_epoch=0,
+                           val_marker_tag='checkerboard_halfres',
+                           val_marker_epoch_tag='basic_split',
+                           gaze_tag='default_mapper',
+                           error_tag='smooth_tps_default',
+                           dbi=None,
+                           is_verbose=True,
+                           ):
+    if dbi is None:
+        dbi = session.dbi
+    verbosity = copy.copy(dbi.is_verbose)
+    dbi.is_verbose = is_verbose > 1
+
+    if 'monocular' in calibration_tag:
+        eyes = ['left', 'right']
+        outputs = dict(pupil=dict(left=[], right=[]),
+                       calibration=dict(left=[], right=[]),
+                       gaze=dict(left=[], right=[]),
+                       error=dict(left=[], right=[]),
+                       )
+    else:
+        eyes = ['both']
+        outputs = dict(pupil=dict(both=[]),
+                       calibration=dict(both=[]),
+                       gaze=dict(both=[]),
+                       error=dict(both=[]),
+                       )
+    outputs['session'] = session
+    outputs.update(dict(calibration_marker_all=[],
+                        validation_marker_all=[],
+                        calibration_marker_filtered=[],
+                        validation_marker_filtered=[],
+                        )
+                   )
+
+    try:
+        print("> Searching for calibration markers...")
+        outputs['calibration_marker_all'] = dbi.query(
+            1, type='MarkerDetection', tag=cal_marker_tag, epoch='all', session=session._id)
+        print(">> FOUND it")
+    except:
+        print('>> NOT found')
+        outputs['calibration_marker_all'] = None
+    try:
+        print("> Searching for validation markers...")
+        outputs['validation_marker_all'] = dbi.query(
+            1, type='MarkerDetection', tag=val_marker_tag, epoch='all', session=session._id)
+        print(">> FOUND it")
+    except:
+        print('>> NOT found')
+        outputs['validation_marker_all'] = None
+    try:
+        print("> Searching for filtered calibration markers...")
+        cfiltered_tag = '-'.join([cal_marker_tag, cal_marker_epoch_tag])
+        outputs['calibration_marker_filtered'] = dbi.query(
+            1, type='MarkerDetection', tag=cfiltered_tag, epoch=cal_marker_epoch, session=session._id)
+        print(">> FOUND it")
+    except:
+        print('>> NOT found')
+        outputs['calibration_marker_filtered'] = None
+    try:
+        print("> Searching for filtered validation markers...")
+        vfiltered_tag = '-'.join([val_marker_tag, val_marker_epoch_tag])
+        tmp = dbi.query(type='MarkerDetection',
+                        tag=vfiltered_tag, session=session._id)
+        tmp = sorted(tmp, key=lambda x: x.epoch)
+        outputs['validation_marker_filtered'] = tmp
+        print(">> FOUND %d" % (len(tmp)))
+    except:
+        outputs['validation_marker_filtered'] = None
+
+    # Quick way: Find error, derive everything else from that
+    all_tags = [pupil_tag, cal_marker_tag, cal_marker_epoch_tag,
+                calibration_tag, gaze_tag, val_marker_tag, val_marker_epoch_tag, error_tag]
+    # Skip any steps not provided? Likely to cause bugs below
+    #all_tags = [x for x in all_tags if x is not None]
+    err_tag = '-'.join(all_tags)
+    try:
+        print("> Searching for error...")
+        error_found = True
+        err = dict(
+            left=dbi.query(1, tag=err_tag, eye='left', session=session._id),
+            right=dbi.query(1, tag=err_tag, eye='right', session=session._id),
+        )
+        print(">> FOUND error...")
+    except:
+        print(">> NO error found...")
+        error_found = False
+
+    for eye in eyes:
+        if error_found:
+            # Use only epoch 0 error for most of these
+            err[eye].db_load()
+            outputs['pupil'][eye] = err[eye].gaze.pupil_detection
+            if isinstance(outputs['pupil'][eye], list):
+                print('>>>', len(outputs['pupil'][eye]), 'pupil detections for %s eye found'%eye)
+                outputs['pupil'][eye] = err[eye].gaze.pupil_detection[0]
+            outputs['calibration'][eye] = err[eye].gaze.calibration
+            outputs['gaze'][eye] = err[eye].gaze
+            outputs['error'][eye] = err[eye]
+        else:
+            try:
+                print("> Searching for %s pupil..." % eye)
+                outputs['pupil'][eye] = dbi.query(
+                    1, type='PupilDetection', tag=pupil_tag, eye=eye, session=session._id)
+                print(">> FOUND %s pupil..." % eye)
+            except:
+                print('>> NOT found')
+                outputs['pupil'][eye] = None
+            try:
+                print("> Searching for %s calibration..." % eye)
+                calib_tag_full = '-'.join(all_tags[:4])
+                outputs['calibration'][eye] = dbi.query(
+                    1, type='Calibration', tag=calib_tag_full, eye=eye, epoch=cal_marker_epoch, session=session._id)
+                print(">> FOUND %s calibration..." % eye)
+            except:
+                print('>> NOT found')
+                outputs['calibration'][eye] = None
+            try:
+                print("> Searching for %s gaze..." % eye)
+                gaze_tag_full = '-'.join(all_tags[:5])
+                outputs['gaze'][eye] = dbi.query(
+                    1, type='Gaze', tag=gaze_tag_full, eye=eye, session=session._id)
+                print(">> FOUND %s gaze..." % eye)
+            except:
+                print('>> NOT found')
+                outputs['gaze'][eye] = None
+            outputs['error'][eye] = None
+
+    dbi.is_verbose = verbosity
+
+    return outputs
+    
+
+def make_gaze_animation(session,
+                        time_idx=None,
+                        frame_idx=None,
+                        crop_size=(384, 384),
+                        fps=30,
+                        hspace=0.1,
+                        wspace=None,
+                        eye='left',
+                        **pipeline_kw):
+    """Make radical gaze animation"""
+    if not isinstance(session, (list, tuple)):
+        # DELETE ME here for debugging convenience
+        pipeline_elements = load_pipeline_elements(
+            session, **pipeline_kw, is_verbose=False)
+        world, eye_left_ds, eye_right_ds, \
+            pupil_left_matched, pupil_right_matched, \
+            gaze_matched, gc_video = _load_gaze_plot_elements(
+                pipeline_elements, time_idx=time_idx, frame_idx=frame_idx, crop_size=crop_size)
+    else:
+        world, eye_left_ds, eye_right_ds, \
+            pupil_left_matched, pupil_right_matched, \
+            gaze_matched, gc_video = session  # _load_gaze_plot_elements(pipeline_elements, time_idx=time_idx, frame_idx=frame_idx)
+    n_frames = world.shape[0]
+    frame = world[0]
+    rect_width = crop_size[0] / frame.shape[1]
+    rect_height = crop_size[1] / frame.shape[0]
+
+    fig = plt.figure(figsize=(8, 8 * 13.5/12))  # * 14 / 12))
+    gs = gridspec.GridSpec(2, 3, figure=fig,  hspace=hspace, wspace=wspace,
+                  height_ratios=[1, 2], width_ratios=[1, 1, 1])
+    ax_eye_left = fig.add_subplot(gs[0, 0])
+    ax_eye_right = fig.add_subplot(gs[0, 1])
+    ax_gc = fig.add_subplot(gs[0, 2])
+    ax_vid = fig.add_subplot(gs[1, :])
+    ax_vid.axis([0, 1, 1, 0])
+    ax_vid.set_xticks([])  # To visual field size?
+    ax_vid.set_yticks([])
+
+    # Initialize all plots
+    gaze_rect_h = gaze_rect(
+        gaze_matched[eye]['norm_pos'][0], rect_width, rect_height, ax=ax_vid, linewidth=3)
+    gaze_dot_h = ax_vid.scatter(*gaze_matched[eye]['norm_pos'][0], c='red')
+    world_h = ax_vid.imshow(world[0], extent=[0, 1, 1, 0], aspect='auto')
+    eye_left_h = ax_eye_left.imshow(eye_left_ds[0], extent=[0, 1, 1, 0])
+    pupil_left_h = ax_eye_left.scatter(
+        *pupil_left_matched['norm_pos'][0], c='red')
+    eye_right_h = ax_eye_right.imshow(eye_right_ds[0], extent=[0, 1, 1, 0])
+    gc_h = ax_gc.imshow(gc_video[eye][1][0], extent=[0, 1, 1, 0])
+
+    ax_eye_left.axis([1, 0, 1, 0])
+    ax_eye_left.set_xticks([])
+    ax_eye_left.set_yticks([])
+    ax_eye_right.axis([0, 1, 0, 1])
+    ax_eye_right.set_xticks([])
+    ax_eye_right.set_yticks([])
+
+    ax_gc.set_xticks([0, 0.5, 1])
+    ax_gc.set_xticklabels([-17, 0, 17])
+    ax_gc.set_yticks([0, 0.5, 1])
+    ax_gc.set_yticklabels([-17, 0, 17])
+    ax_gc.grid('on', linestyle=':', color=(0.95, 0.85, 0))
+    plt.close(fig)
+
+    def init():
+        gaze_rect_h.set_xy(
+            [0.5, 0.5] - np.array([rect_width/2, rect_height/2]))
+        gaze_dot_h.set_offsets([0.5, 0.5])
+        pupil_left_h.set_offsets([0.5, 0.5])
+        world_h.set_array(np.zeros_like(frame))
+        eye_left_h.set_array(np.zeros_like(eye_left_ds[0]))
+        eye_right_h.set_array(np.zeros_like(eye_right_ds[0]))
+        gc_h.set_array(np.zeros_like(gc_video[eye][1][0]))
+        return [gaze_rect_h, gaze_dot_h, world_h, eye_left_h, eye_right_h, gc_h]
+
+    def animate(i):
+        gaze_rect_h.set_xy(
+            gaze_matched[eye]['norm_pos'][i] - np.array([rect_width/2, rect_height/2]))
+        gaze_dot_h.set_offsets(gaze_matched[eye]['norm_pos'][i])
+        pupil_left_h.set_offsets(pupil_left_matched['norm_pos'][i])
+        world_h.set_data(world[i])
+        eye_left_h.set_data(eye_left_ds[i])
+        eye_right_h.set_data(eye_right_ds[i])
+        try:
+            gc_h.set_data(gc_video[eye][1][i])
+        except:
+            print("GAAAAAA")
+        return [gaze_rect_h, gaze_dot_h, world_h, eye_left_h, pupil_left_h, eye_right_h, gc_h]
+
+    anim = animation.FuncAnimation(
+        fig, animate, init_func=init, frames=n_frames, interval=1/fps * 1000, blit=True)
+    return anim
+
+

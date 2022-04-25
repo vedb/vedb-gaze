@@ -17,6 +17,7 @@ from .utils import (
     match_time_points,
     arraydict_to_dictlist, 
     dictlist_to_arraydict,
+    stack_arraydicts,
     read_yaml,
 )
 from .visualization import colormap_2d
@@ -113,13 +114,13 @@ def calibrate_2d_binocular(cal_pt_cloud_binocular, cal_pt_cloud0,
     )
     if not inliers.any():
         return method, None
-
+    # Right eye
     map_fn, inliers, params_eye0 = calibrate_2d.calibrate_2d_polynomial(
         cal_pt_cloud0, frame_size, binocular=False
     )
     if not inliers.any():
         return method, None
-
+    # Left eye
     map_fn, inliers, params_eye1 = calibrate_2d.calibrate_2d_polynomial(
         cal_pt_cloud1, frame_size, binocular=False
     )
@@ -281,7 +282,7 @@ class Calibration(object):
             self.pupil_list.extend(arraydict_to_dictlist(right_pupil))
             # Sort both left and right pupils by time. `id` field in each dict
             # will (SHOULD!) still indicate which eye is which. 
-            self.pupil_list = sorted(self.pupil_list, key=lambda x: x['timepoint'])
+            self.pupil_list = sorted(self.pupil_list, key=lambda x: x['timestamp'])
         else:
             if not self.mapping_computed:
                 self.pupil_arrays = match_time_points(
@@ -343,9 +344,11 @@ class Calibration(object):
         # Map gaze to video coordinates
         if self.calibration_type == 'binocular_pl':
             # Create a list of dicts, sorted by timestamps
-            if not isinstance(pupil_arrays, list):
-                raise ValueError('For binocular calibrations, `pupil_arrays` input must be a list of two dictionaries\n of arrays for left and right eyes.')
+            #if not isinstance(pupil_arrays, list):
+            #    raise ValueError('For binocular calibrations, `pupil_arrays` input must be a list of two dictionaries\n of arrays for left and right eyes.')
+            # Left
             pupil_list = arraydict_to_dictlist(pupil_arrays[0])
+            # Right
             pupil_list.extend(arraydict_to_dictlist(pupil_arrays[1]))
             pupil_list = sorted(pupil_list, key=lambda x: x['timestamp'])
             # Map w/ pupil's binocular mapper
@@ -458,14 +461,26 @@ class Calibration(object):
                 ax_left, ax_right = ax_eye
                 # recursive call to plot l, r eye grids on l, r axes
         if self.calibration_type == 'binocular_pl':
+            # Start with grid of locations for left
             grid_pts_array_l = self._get_grid_points(
-                'left', n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='arraydict')
+                'left', 
+                n_points=n_points, 
+                sc=sc, 
+                n_horizontal_lines=n_horizontal_lines, 
+                return_type='arraydict')
+            # Fill in `_id`` and `confidence` fields
             grid_pts_array_l['id'] = np.ones_like(
                 grid_pts_array_l['timestamp'], dtype=np.int64)
             grid_pts_array_l['confidence'] = np.ones_like(
                 grid_pts_array_l['timestamp'], dtype=np.float32)
+            # Continue with grid of locations for right
             grid_pts_array_r = self._get_grid_points(
-                'right', n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='arraydict')
+                'right', 
+                n_points=n_points, 
+                sc=sc, 
+                n_horizontal_lines=n_horizontal_lines, 
+                return_type='arraydict')
+            # Fill in `_id`` and `confidence` fields
             grid_pts_array_r['id'] = np.zeros_like(
                 grid_pts_array_r['timestamp'], dtype=np.int64)
             grid_pts_array_r['confidence'] = np.ones_like(
@@ -473,15 +488,16 @@ class Calibration(object):
             if (grid_pts_array_l is None) or (grid_pts_array_r is None):
                 grid_array = None
             else:
-                gaze_binocular = self.map(stack_arraydicts(
-                    grid_pts_array_l, grid_pts_array_r), return_type='dictlist')
+                gaze_binocular = self.map([grid_pts_array_l, grid_pts_array_r], 
+                                          return_type='dictlist')
+                gaze = {}
                 # Separate left and right eyes
                 gaze['left'] = [
                     g for g in gaze_binocular if g['base_data'][0]['id'] == 0]
-                gaze['left'] = gaze_utils.dictlist_to_arraydict(gaze_left)
+                gaze['left'] = dictlist_to_arraydict(gaze['left'])
                 gaze['right'] = [
                     g for g in gaze_binocular if g['base_data'][0]['id'] == 1]
-                gaze['right'] = gaze_utils.dictlist_to_arraydict(gaze_right)
+                gaze['right'] = dictlist_to_arraydict(gaze['right'])
                 grid_array = gaze[eye]['norm_pos']
         elif self.calibration_type in ('monocular_pl', 'monocular_tps'):
             grid_pts_list = self._get_grid_points(
@@ -529,6 +545,8 @@ class Calibration(object):
         eye : TYPE
             Description
         """
+        # ASSUMPTION:
+        eye_camera_fps = 120
         if 'binocular' not in self.calibration_type: 
             pupils = self.pupil_arrays
         else:
@@ -557,11 +575,11 @@ class Calibration(object):
             n_points=n_points,
         )
         pts = np.array(pts).T
-        grid_pts = dict(norm_pos=pts, timestamp=np.arange(len(pts))/120.)
-        grid_pts_list = arraydict_to_dictlist(grid_pts)
+        grid_pts = dict(norm_pos=pts, timestamp=np.arange(len(pts))/eye_camera_fps)
         if return_type == 'array':
             return pts
         elif return_type == 'arraydict':
             return grid_pts
         elif return_type == 'dictlist':
+            grid_pts_list = arraydict_to_dictlist(grid_pts)
             return grid_pts_list

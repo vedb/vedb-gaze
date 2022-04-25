@@ -3,7 +3,7 @@ from . import utils
 import numpy as np
 from sklearn import cluster
 from scipy.stats import zscore
-
+import copy
 
 def find_duplicates(timestamps, mode='all',):
     """Remove duplicate time values in a series of timestamps
@@ -114,13 +114,14 @@ def split_timecourse(*data, max_epoch_gap=15, min_epoch_length=30, verbose=True)
     if verbose:
         print("== Splitting timecourse ==")
     timestamps = data[0]['timestamp']
+    t0 = copy.copy(timestamps[0])
     break_indices, = np.nonzero(np.diff(timestamps) > max_epoch_gap)
     # np.diff shortens index; set correct w/ +1
     break_indices += 1
     break_indices = np.hstack([[0], break_indices, [len(timestamps)]])
     if verbose:
-        print('%d epochs found initially; starting at:' %
-              (len(break_indices)-1), break_indices)
+        print('Frame indices for breaks btw timestamps:')
+        print(break_indices)
     output = []
     epoch_durations = []
     for st, fin in zip(break_indices[:-1], break_indices[1:]):
@@ -135,9 +136,14 @@ def split_timecourse(*data, max_epoch_gap=15, min_epoch_length=30, verbose=True)
         if epoch_duration > min_epoch_length:
             output.append(this_epoch)
     if verbose:
+        print('%d epochs found:' %
+              (len(break_indices)-2))
+        for x, dur in zip(break_indices[1:-1], epoch_durations):
+            #print(x)
+            #print(timestamps[x])
+            print('@ %d min, %.1f s : %.1f s long' % ((timestamps[x]-t0) // 60, (timestamps[x]-t0) % 60, dur))
+
         print('%d epochs meet duration limits' % len(output))
-        if len(output) < (len(break_indices) - 1):
-            print("Durations were: ", epoch_durations)
     return output
 
 
@@ -272,6 +278,7 @@ def cluster_marker_points(markers,
     # Keep clusters that are within a specified interval of length
     ct = markers['timestamp'][~to_kill]
     group_durations = np.array([np.ptp(ct[groups == uv]) for uv in unique_groups])
+    print(group_durations)
     keep_groups = (group_durations > min_cluster_time) & (
         group_durations < max_cluster_time)
     appropriate_duration_index = unique_groups[keep_groups]
@@ -383,13 +390,16 @@ def find_epochs(marker,
 
     # Match time points to compare markers w/ eye data
     to_split = [marker]
+    # Make window width half median frame rate, by default
+    frame_time = np.median(np.diff(all_timestamps))
+    window = frame_time / 2
     if pupil_left is not None:
         pupil_left_match = utils.match_time_points(
-        marker, pupil_left, all_timestamps=all_timestamps)
+        marker, pupil_left, window=window)
         to_split.append(pupil_left_match)
     if pupil_right is not None:
         pupil_right_match = utils.match_time_points(
-            marker, pupil_right, all_timestamps=all_timestamps)
+            marker, pupil_right, window=window)
         to_split.append(pupil_right_match)
     
     # Split into multiple epochs of calibration, validation as needed

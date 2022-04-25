@@ -201,7 +201,7 @@ def marker_detection(session_folder,
 
     """
     if is_verbose:
-        print("\n=== Finding all marker locations ===\n")
+        print(f"\n=== Finding all {marker_type} marker locations ({param_tag}) ===\n")
     if is_notebook():
         progress_bar = tqdm.notebook.tqdm
     else:
@@ -293,7 +293,7 @@ def marker_filtering(marker_fname,
                           is_verbose=False):
     """"""
     if is_verbose:
-        print("\n=== Finding marker epochs ===\n")
+        print(f"\n=== Finding {marker_type} marker epochs ({param_tag}) ===\n")
     if is_notebook:
         progress_bar = tqdm.notebook.tqdm
     else:
@@ -1062,8 +1062,10 @@ def make_pipeline(session,
                 # epoch=epoch, # Tricky to do this right, haven't found a way yet.
                 fn=error_params.fn,
                 param_tag=error_param_tag,
-                db_tag='-'.join([gaze_db_tag, val_marker_param_tag,
-                                val_marker_filter_param_tag,]),
+                db_tag='-'.join([gaze_db_tag, 
+                                val_marker_param_tag,
+                                val_marker_filter_param_tag, 
+                                error_param_tag]),
                 db_name=db_name,
                 is_verbose=is_verbose,
             ).split('marker_fname')
@@ -1072,7 +1074,7 @@ def make_pipeline(session,
                 (error_name, getattr(gaze_pipeline, error_name).lzout.error))
 
     gaze_pipeline.set_output(pupil_out + calibration_marker_out + cal_filter_out + \
-        validation_marker_out + val_filter_out + calibration_out + gaze_out) # + error_out)
+        validation_marker_out + val_filter_out + calibration_out + gaze_out + error_out)
 
     return gaze_pipeline
 """
