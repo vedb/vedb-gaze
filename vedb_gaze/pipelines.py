@@ -6,12 +6,12 @@ import vedb_store
 import file_io
 import pydra
 import typing
+import copy
 import os
 
 from . import utils
 from .options import config
 from .calibration import Calibration
-
 
 
 BASE_DIR = config.get('paths', 'base_dir')
@@ -48,23 +48,6 @@ def get_default_kwargs(fn):
     kws = inspect.getargspec(fn)
     defaults = dict(zip(kws.args[-len(kws.defaults):], kws.defaults))
     return defaults
-
-
-def get_function(function_name):
-    """Load a function to a variable by name
-
-    Parameters
-    ----------
-    function_name : str
-        string name for function (including module)
-    """
-    import importlib
-    fn_path = function_name.split('.')
-    module_name = '.'.join(fn_path[:-1])
-    fn_name = fn_path[-1]
-    module = importlib.import_module(module_name)
-    func = getattr(module, fn_name)
-    return func
 
 
 ### --- Pipeline steps --- ###
@@ -143,7 +126,7 @@ def pupil_detection(session_folder,
         kwargs = utils.read_yaml(param_fpath)
 
     # convert `fn` string to callable function
-    func = get_function(fn)
+    func = utils.get_function(fn)
     # Optionally add progress bar, if supported
     default_kw = get_default_kwargs(func)
     if 'progress_bar' in default_kw:
@@ -248,7 +231,7 @@ def marker_detection(session_folder,
         kwargs = utils.read_yaml(param_fpath)
 
     # convert `fn` string to callable function
-    func = get_function(fn)
+    func = utils.get_function(fn)
     # Optionally add progress bar, if supported
     default_kw = get_default_kwargs(func)
     if 'progress_bar' in default_kw:
@@ -363,7 +346,7 @@ def marker_filtering(marker_fname,
         kwargs = utils.read_yaml(param_fpath)
 
     # convert `fn` string to callable function
-    func = get_function(fn)
+    func = utils.get_function(fn)
     # Optionally add progress bar, if supported
     default_kw = get_default_kwargs(func)
     if 'progress_bar' in default_kw:
@@ -523,7 +506,7 @@ def compute_calibration(marker_fname,
         # only one eye
         pupil_data = pupil_data[0]
     # convert `calibration_class` string to callable class
-    cal_class = get_function(calibration_class)
+    cal_class = utils.get_function(calibration_class)
     print("Computing calibration...")
     cal = cal_class(pupil_data, marker_data, vdims, **kwargs,)
 
@@ -643,7 +626,7 @@ def map_gaze(session_folder,
         # only one eye
         pupil_data = pupil_data[0]
     
-    func = get_function(fn)
+    func = utils.get_function(fn)
     print("Computing gaze...")
     gaze = func(calibration, pupil_data, **kwargs)
 
@@ -746,7 +729,7 @@ def compute_error(session_folder,
         #vdims = file_io.var_size(os.path.join(
         #    session_folder, 'world.mp4'))[2:0:-1]
 
-    func = get_function(fn)
+    func = utils.get_function(fn)
     print("Computing error...")
     error = func(marker_data, gaze_data, **kwargs)
 
@@ -779,6 +762,7 @@ def compute_error(session_folder,
 
 # correct pupil slippage
 
+
 ### --- Workflows --- ###
 def make_pipeline(session,
                   pupil_param_tag='plab_default',
@@ -796,31 +780,42 @@ def make_pipeline(session,
                   ):
     """Build a gaze pipeline based on tags for each step"""
     dbi = vedb_store.docdb.getclient(dbname=db_name, is_verbose=False)
+    # Initial query for pipeline results:
+    pl_elements = utils.load_pipeline_elements(session,
+        pupil_param_tag=pupil_param_tag,
+        pupil_drift_param_tag=pupil_drift_param_tag,
+        cal_marker_param_tag=cal_marker_param_tag,
+        val_marker_param_tag=val_marker_param_tag,
+        cal_marker_filter_param_tag=cal_marker_filter_param_tag,
+        val_marker_filter_param_tag=val_marker_filter_param_tag,
+        calib_param_tag=calib_param_tag,
+        mapping_param_tag=mapping_param_tag,
+        error_param_tag=error_param_tag,
+        calibration_epoch=calibration_epoch,
+        dbi=dbi,
+        is_verbose=False,
+        )
     # Get param dicts
+    # Abusing database interface for speed
+    dbi.is_verbose = False
+    pds_all = dbi.query(type='ParamDictionary')
+    dbi.is_verbose = True
     if pupil_param_tag is not None:
-        pupil_params = dbi.query(
-            1, type='ParamDictionary', tag=pupil_param_tag)
+        pupil_params = [x for x in pds_all if x.tag==pupil_param_tag][0]
     if cal_marker_param_tag is not None:
-        cal_marker_params = dbi.query(
-            1, type='ParamDictionary', tag=cal_marker_param_tag)
+        cal_marker_params = [x for x in pds_all if x.tag == cal_marker_param_tag][0]
     if val_marker_param_tag is not None:
-        val_marker_params = dbi.query(
-            1, type='ParamDictionary', tag=val_marker_param_tag)
+        val_marker_params = [x for x in pds_all if x.tag==val_marker_param_tag][0]
     if cal_marker_filter_param_tag is not None:
-        cal_marker_filter_params = dbi.query(
-            1, type='ParamDictionary', tag=cal_marker_filter_param_tag)
+        cal_marker_filter_params = [x for x in pds_all if x.tag==cal_marker_filter_param_tag][0]
     if val_marker_filter_param_tag is not None:
-        val_marker_filter_params = dbi.query(
-            1, type='ParamDictionary', tag=val_marker_filter_param_tag)
+        val_marker_filter_params = [x for x in pds_all if x.tag==val_marker_filter_param_tag][0]
     if calib_param_tag is not None:
-        calib_params = dbi.query(
-            1, type='ParamDictionary', tag=calib_param_tag)
+        calib_params = [x for x in pds_all if x.tag==calib_param_tag][0]
     if mapping_param_tag is not None:
-        mapping_params = dbi.query(
-            1, type='ParamDictionary', tag=mapping_param_tag)
+        mapping_params = [x for x in pds_all if x.tag==mapping_param_tag][0]
     if error_param_tag is not None:
-        error_params = dbi.query(
-            1, type='ParamDictionary', tag=error_param_tag)
+        error_params = [x for x in pds_all if x.tag==error_param_tag][0]
     # Create workflow
     gaze_pipeline = pydra.Workflow(name='gaze_default', 
                                    input_spec=['folder', 'db_name'],
@@ -831,212 +826,273 @@ def make_pipeline(session,
     if pupil_param_tag is None:
         pupil_out = []
     else:
-        gaze_pipeline.add(pupil_detection(
-            name='pupil_left',
-            session_folder=session.folder,  # gaze_pipeline.lzin.folder,
-            fn=pupil_params.fn,
-            param_tag=pupil_param_tag,
-            eye='left',
-            db_tag=pupil_param_tag,
-            db_name=db_name,  # gaze_pipeline.lzin.db_name,
-            is_verbose=is_verbose,
+        if 'pupil' in pl_elements:
+            pl_path = pl_elements['pupil']['left'].fname
+            pr_path = pl_elements['pupil']['right'].fname
+            # TEMP: Suppress output for completed steps.
+            # May want to reconcile this later somehow. Or not.
+            pupil_out = []
+                #("pupil_left",
+                # pl_path),
+                #("pupil_right",
+                # pr_path),
+            #]
+            pupil_inpt = [pl_path, pr_path]
+        else:
+            gaze_pipeline.add(pupil_detection(
+                name='pupil_left',
+                session_folder=session.folder,  # gaze_pipeline.lzin.folder,
+                fn=pupil_params.fn,
+                param_tag=pupil_param_tag,
+                eye='left',
+                db_tag=pupil_param_tag,
+                db_name=db_name,  # gaze_pipeline.lzin.db_name,
+                is_verbose=is_verbose,
+                )
             )
-        )
-        gaze_pipeline.add(pupil_detection(
-            name='pupil_right',
-            session_folder=session.folder,  # gaze_pipeline.lzin.folder,
-            fn=pupil_params.fn,
-            param_tag=pupil_param_tag,
-            eye='right',
-            db_tag=pupil_param_tag,
-            db_name=db_name,  # gaze_pipeline.lzin.db_name,
-            is_verbose=is_verbose,
+            gaze_pipeline.add(pupil_detection(
+                name='pupil_right',
+                session_folder=session.folder,  # gaze_pipeline.lzin.folder,
+                fn=pupil_params.fn,
+                param_tag=pupil_param_tag,
+                eye='right',
+                db_tag=pupil_param_tag,
+                db_name=db_name,  # gaze_pipeline.lzin.db_name,
+                is_verbose=is_verbose,
+                )
             )
-        )
-        pupil_out = [
-            ("pupil_left", 
-             gaze_pipeline.pupil_left.lzout.pupil_locations),
-             ("pupil_right",
-             gaze_pipeline.pupil_right.lzout.pupil_locations),
-            ]
+            pupil_out = [
+                ("pupil_left", 
+                gaze_pipeline.pupil_left.lzout.pupil_locations),
+                ("pupil_right",
+                gaze_pipeline.pupil_right.lzout.pupil_locations),
+                ]
+            pupil_inpt = [x[1] for x in pupil_out]
     # Calibration marker detection
     if cal_marker_param_tag is not None:
-        gaze_pipeline.add(marker_detection(
-            name='calibration_detection',
-            session_folder=session.folder,  # gaze_pipeline.lzin.folder,
-            fn=cal_marker_params.fn,
-            param_tag=cal_marker_param_tag,
-            db_tag=cal_marker_param_tag,
-            marker_type='concentric_circle',
-            db_name=db_name,  # gaze_pipeline.lzin.db_name,
-            is_verbose=is_verbose,)
-        )
-        calibration_marker_out = [("calibration_marker",
-                                   gaze_pipeline.calibration_detection.lzout.marker_locations), ]
+        if 'calibration_marker_all' in pl_elements:
+            # TEMP: Suppress output for completed steps.
+            # May want to reconcile this later somehow. Or not.
+            calibration_marker_out = [] #("calibration_marker",
+                                        #pl_elements['calibration_marker_all'].fname), ]
+            calibration_marker_inpt = pl_elements['calibration_marker_all'].fname
+        else:
+            gaze_pipeline.add(marker_detection(
+                name='calibration_detection',
+                session_folder=session.folder,  # gaze_pipeline.lzin.folder,
+                fn=cal_marker_params.fn,
+                param_tag=cal_marker_param_tag,
+                db_tag=cal_marker_param_tag,
+                marker_type='concentric_circle',
+                db_name=db_name,  # gaze_pipeline.lzin.db_name,
+                is_verbose=is_verbose,)
+            )
+            calibration_marker_out = [("calibration_marker",
+                                    gaze_pipeline.calibration_detection.lzout.marker_locations), ]
+            calibration_marker_inpt = gaze_pipeline.calibration_detection.lzout.marker_locations
     else:
         calibration_marker_out = []
+    
     # Filtering out spurious calibration marker detections
     if cal_marker_filter_param_tag is None:
         cal_filter_out = []
     else:
-        if cal_marker_param_tag is None:
-            raise ValueError("Must specify cal_marker_param_tag to conduct calibration marker filtering!")
-        gaze_pipeline.add(marker_filtering(
-            name='calibration_marker_filtering',
-            marker_fname=gaze_pipeline.calibration_detection.lzout.marker_locations,
-            session_folder=session.folder,  # gaze_pipeline.lzin.folder,
-            fn=cal_marker_filter_params.fn,
-            param_tag=cal_marker_filter_param_tag,
-            db_tag='-'.join([cal_marker_param_tag, cal_marker_filter_param_tag]),
-            marker_type='concentric_circle',
-            db_name=db_name,
-            is_verbose=is_verbose,
+        if 'calibration_marker_filtered' in pl_elements:
+            # Make a list long enough to contain an index for the calibration marker epoch in question
+            # Note: this is shady, sorry future me for bugs this will prob generate
+            cal_epoch_fnames = [''] * (calibration_epoch + 1)
+            cal_epoch_fnames[calibration_epoch] = pl_elements['calibration_marker_filtered'].fname
+            # TEMP: Suppress output for completed steps.
+            # May want to reconcile this later somehow. Or not.
+            cal_filter_out = []#("calibration_epochs",
+                               # cal_epoch_fnames), ]
+            calibrations_filtered = cal_epoch_fnames
+        else:
+            if cal_marker_param_tag is None:
+                raise ValueError("Must specify cal_marker_param_tag to conduct calibration marker filtering!")
+            gaze_pipeline.add(marker_filtering(
+                name='calibration_marker_filtering',
+                marker_fname=calibration_marker_inpt,
+                session_folder=session.folder,  # gaze_pipeline.lzin.folder,
+                fn=cal_marker_filter_params.fn,
+                param_tag=cal_marker_filter_param_tag,
+                db_tag='-'.join([cal_marker_param_tag, cal_marker_filter_param_tag]),
+                marker_type='concentric_circle',
+                db_name=db_name,
+                is_verbose=is_verbose,
+                )
             )
-        )
-        cal_filter_out = [("calibration_epochs",
-                          gaze_pipeline.calibration_marker_filtering.lzout.marker_locations),]
+            cal_filter_out = [("calibration_epochs",
+                            gaze_pipeline.calibration_marker_filtering.lzout.marker_locations),]
+            calibrations_filtered = gaze_pipeline.calibration_marker_filtering.lzout.marker_locations
     # Computing calibration 
     if calib_param_tag is None:
         calibration_out = []
     else:
         if any([x is None for x in [pupil_param_tag, cal_marker_param_tag, cal_marker_filter_param_tag]]):
-            raise ValueError("Must specify tags for all previous steps to compute calibration!")
+                raise ValueError(
+                    "Must specify tags for all previous steps to compute calibration!")
         # Choose epoch
         gaze_pipeline.add(select(name='cal_epoch_choice',
-                                 x_list=gaze_pipeline.calibration_marker_filtering.lzout.marker_locations,
-                                 index=calibration_epoch))
-        if 'binocular' in calib_param_tag:
-            gaze_pipeline.add(compute_calibration(
-                name='calibration_both',
-                marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
-                pupil_fnames=[gaze_pipeline.pupil_left.lzout.pupil_locations,
-                              gaze_pipeline.pupil_right.lzout.pupil_locations, ],
-                session_folder=session.folder,
-                calibration_class=calib_params.fn,
-                param_tag=calib_param_tag,
-                eye='both',
-                db_tag='-'.join([pupil_param_tag,
-                                cal_marker_param_tag,
-                                cal_marker_filter_param_tag,
-                                calib_param_tag,]),
-                db_name=db_name,
-                is_verbose=is_verbose,
-                )
-            )
-            calibration_out = [('calibration_both', gaze_pipeline.calibration_both.lzout.calibration_file)]
-
-        elif 'monocular' in calib_param_tag:
-            # There may be a more compact way to do this with a pydra splitter, 
-            # but I can't see how w/ the extra kwarg for `eye`
-            gaze_pipeline.add(compute_calibration(
-                name='calibration_left',
-                marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
-                pupil_fnames=gaze_pipeline.pupil_left.lzout.pupil_locations,
-                session_folder=session.folder,
-                calibration_class=calib_params.fn,
-                param_tag=calib_param_tag,
-                eye='left',
-                db_tag='-'.join([pupil_param_tag,
-                                cal_marker_param_tag,
-                                cal_marker_filter_param_tag,
-                                calib_param_tag, ]),
-                db_name=db_name,
-                is_verbose=is_verbose,
-            )
-            )
-            gaze_pipeline.add(compute_calibration(
-                name='calibration_right',
-                marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
-                pupil_fnames=gaze_pipeline.pupil_right.lzout.pupil_locations,
-                session_folder=session.folder,
-                calibration_class=calib_params.fn,
-                param_tag=calib_param_tag,
-                eye='right',
-                db_tag='-'.join([pupil_param_tag,
-                                cal_marker_param_tag,
-                                cal_marker_filter_param_tag,
-                                calib_param_tag, ]),
-                db_name=db_name,
-                is_verbose=is_verbose,
-            )
-            )
-            calibration_out = [('calibration_left',gaze_pipeline.calibration_left.lzout.calibration_file), 
-                               ('calibration_right',gaze_pipeline.calibration_right.lzout.calibration_file, )]
+                                 x_list=calibrations_filtered,
+                                    index=calibration_epoch))
+        if 'calibration' in pl_elements:
+            if 'binocular' in calib_param_tag:
+                calibration_out = []
+                    #('calibration_both', pl_elements['calibration']['both'].fname)]
+                calibration_inpt = [pl_elements['calibration']['both'].fname]
+            elif 'monocular' in calib_param_tag:
+                calibration_out = []#('calibration_left', pl_elements['calibration']['left'].fname),
+                                    #('calibration_right', pl_elements['calibration']['right'].fname, )]
+                calibration_inpt = [pl_elements['calibration']['left'].fname, 
+                                    pl_elements['calibration']['right'].fname]
         else:
-            raise ValueError(f"known calbration tag {calib_param_tag}")
+            if 'binocular' in calib_param_tag:
+                gaze_pipeline.add(compute_calibration(
+                    name='calibration_both',
+                    marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
+                    pupil_fnames=pupil_inpt,
+                    session_folder=session.folder,
+                    calibration_class=calib_params.fn,
+                    param_tag=calib_param_tag,
+                    eye='both',
+                    db_tag='-'.join([pupil_param_tag,
+                                    cal_marker_param_tag,
+                                    cal_marker_filter_param_tag,
+                                    calib_param_tag,]),
+                    db_name=db_name,
+                    is_verbose=is_verbose,
+                    )
+                )
+                calibration_out = [('calibration_both', gaze_pipeline.calibration_both.lzout.calibration_file)]
+
+            elif 'monocular' in calib_param_tag:
+                # There may be a more compact way to do this with a pydra splitter, 
+                # but I can't see how w/ the extra kwarg for `eye`
+                gaze_pipeline.add(compute_calibration(
+                    name='calibration_left',
+                    marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
+                    pupil_fnames=pupil_inpt[0],
+                    session_folder=session.folder,
+                    calibration_class=calib_params.fn,
+                    param_tag=calib_param_tag,
+                    eye='left',
+                    db_tag='-'.join([pupil_param_tag,
+                                    cal_marker_param_tag,
+                                    cal_marker_filter_param_tag,
+                                    calib_param_tag, ]),
+                    db_name=db_name,
+                    is_verbose=is_verbose,
+                )
+                )
+                gaze_pipeline.add(compute_calibration(
+                    name='calibration_right',
+                    marker_fname=gaze_pipeline.cal_epoch_choice.lzout.out,
+                    pupil_fnames=pupil_inpt[1],
+                    session_folder=session.folder,
+                    calibration_class=calib_params.fn,
+                    param_tag=calib_param_tag,
+                    eye='right',
+                    db_tag='-'.join([pupil_param_tag,
+                                    cal_marker_param_tag,
+                                    cal_marker_filter_param_tag,
+                                    calib_param_tag, ]),
+                    db_name=db_name,
+                    is_verbose=is_verbose,
+                )
+                )
+                calibration_out = [('calibration_left',gaze_pipeline.calibration_left.lzout.calibration_file), 
+                                   ('calibration_right',gaze_pipeline.calibration_right.lzout.calibration_file, )]
+            else:
+                raise ValueError(f"known calbration tag {calib_param_tag}")
+            calibration_inpt = [x[1] for x in calibration_out]
     # Mapping gaze
     if mapping_param_tag is None:
         gaze_out = []
     else:
+        # Check for presence in pl_elements
         gaze_tags = [x for x in [pupil_param_tag,
-                                 pupil_drift_param_tag,
-                                 cal_marker_param_tag,
-                                 cal_marker_filter_param_tag,
-                                 calib_param_tag,
-                                 mapping_param_tag] if x is not None]
+                                pupil_drift_param_tag,
+                                cal_marker_param_tag,
+                                cal_marker_filter_param_tag,
+                                calib_param_tag,
+                                mapping_param_tag] if x is not None]
         gaze_db_tag = '-'.join(gaze_tags)
         if 'monocular' in calib_param_tag:
             eyes = ['left', 'right']
-            pupil_fnames =  [gaze_pipeline.pupil_left.lzout.pupil_locations,
-                             gaze_pipeline.pupil_right.lzout.pupil_locations, ]
+            pupil_fnames =  pupil_inpt
         else:
             eyes = ['both']
-            pupil_fnames = [[gaze_pipeline.pupil_left.lzout.pupil_locations,
-                           gaze_pipeline.pupil_right.lzout.pupil_locations, ]]
+            pupil_fnames = [pupil_inpt]
         gaze_out = []
-        for e, eye in enumerate(eyes):
-            gaze_name = 'gaze_%s'%eye
-            gaze_pipeline.add(map_gaze(
-                name=gaze_name,
-                session_folder=session.folder,
-                fn=mapping_params.fn,
-                pupil_fnames=pupil_fnames[e],
-                calibration_fname=calibration_out[e][1],
-                calibration_epoch=calibration_epoch,
-                param_tag=mapping_param_tag,
-                eye=eye,
-                db_tag=gaze_db_tag,
-                db_name=db_name,
-                is_verbose=is_verbose)
-                )
-            gaze_out.append((gaze_name, getattr(gaze_pipeline, gaze_name).lzout.gaze_locations))
-
+        if 'gaze' in pl_elements:
+            gaze_inpt = [pl_elements['gaze'][eye].fname for eye in eyes]
+        else:
+            for e, eye in enumerate(eyes):
+                gaze_name = 'gaze_%s'%eye
+                gaze_pipeline.add(map_gaze(
+                    name=gaze_name,
+                    session_folder=session.folder,
+                    fn=mapping_params.fn,
+                    pupil_fnames=pupil_fnames[e],
+                    calibration_fname=calibration_inpt[e],
+                    calibration_epoch=calibration_epoch,
+                    param_tag=mapping_param_tag,
+                    eye=eye,
+                    db_tag=gaze_db_tag,
+                    db_name=db_name,
+                    is_verbose=is_verbose)
+                    )
+                gaze_out.append((gaze_name, getattr(gaze_pipeline, gaze_name).lzout.gaze_locations))
+            gaze_inpt = [x[1] for x in gaze_out]
+    # Detect validation markers
     if val_marker_param_tag is None:
         validation_marker_out = []
     else:
-        gaze_pipeline.add(marker_detection(
-            name='validation_detection',
-            session_folder=session.folder,
-            fn=val_marker_params.fn,
-            param_tag=val_marker_param_tag,
-            db_tag=val_marker_param_tag,
-            marker_type='checkerboard',
-            db_name=db_name,)
-        )
-        validation_marker_out = [('validation_marker', 
-            gaze_pipeline.validation_detection.lzout.marker_locations),]
+        if 'validation_marker_all' in pl_elements:
+            validation_marker_out = []
+            val_marker_inpt = pl_elements['validation_marker_all'].fname
+        else:
+            gaze_pipeline.add(marker_detection(
+                name='validation_detection',
+                session_folder=session.folder,
+                fn=val_marker_params.fn,
+                param_tag=val_marker_param_tag,
+                db_tag=val_marker_param_tag,
+                marker_type='checkerboard',
+                db_name=db_name,)
+            )
+            validation_marker_out = [('validation_marker', 
+                gaze_pipeline.validation_detection.lzout.marker_locations),]
+            val_marker_inpt = gaze_pipeline.validation_detection.lzout.marker_locations
+
+    # Filter validation markers
     if val_marker_filter_param_tag is None:
         val_filter_out = []
     else:
-        if val_marker_param_tag is None:
-            raise ValueError(
-                "Must specify val_marker_param_tag to conduct validation marker filtering!")
-        gaze_pipeline.add(marker_filtering(
-            name='validation_marker_filtering',
-            marker_fname=gaze_pipeline.validation_detection.lzout.marker_locations,
-            session_folder=session.folder,  # gaze_pipeline.lzin.folder,
-            fn=val_marker_filter_params.fn,
-            param_tag=val_marker_filter_param_tag,
-            db_tag='-'.join([val_marker_param_tag,
-                            val_marker_filter_param_tag]),
-            marker_type='checkerboard',
-            db_name=db_name,
-            is_verbose=is_verbose,
-        )
-        )
-        val_filter_out = [("validation_epochs",
-                          gaze_pipeline.validation_marker_filtering.lzout.marker_locations), ]
-
+        if 'validation_marker_filtered' in pl_elements:
+            val_filter_out = []
+            val_filter_inpt = [x.fname for x in pl_elements['validation_marker_filtered']]
+        else:
+            if val_marker_param_tag is None:
+                raise ValueError(
+                    "Must specify val_marker_param_tag to conduct validation marker filtering!")
+            gaze_pipeline.add(marker_filtering(
+                name='validation_marker_filtering',
+                marker_fname=val_marker_inpt,
+                session_folder=session.folder,  # gaze_pipeline.lzin.folder,
+                fn=val_marker_filter_params.fn,
+                param_tag=val_marker_filter_param_tag,
+                db_tag='-'.join([val_marker_param_tag,
+                                val_marker_filter_param_tag]),
+                marker_type='checkerboard',
+                db_name=db_name,
+                is_verbose=is_verbose,
+            )
+            )
+            val_filter_out = [("validation_epochs",
+                                gaze_pipeline.validation_marker_filtering.lzout.marker_locations), ]
+            val_filter_inpt = gaze_pipeline.validation_marker_filtering.lzout.marker_locations
     
     error_out = []
     if error_param_tag is not None:
@@ -1053,11 +1109,12 @@ def make_pipeline(session,
         # to compute error, so it will be defined.
         for e, eye in enumerate(eyes):
             error_name = f'compute_error_{eye}'
+            print("Attempting to find: ", gaze_inpt[e])
             gaze_pipeline.add(compute_error(
                 name=error_name,
                 session_folder=session.folder,  # gaze_pipeline.lzin.folder,
-                marker_fname=gaze_pipeline.validation_marker_filtering.lzout.marker_locations,
-                gaze_fname=gaze_out[e][1],
+                marker_fname=val_filter_inpt,
+                gaze_fname=gaze_inpt[e],
                 eye=eye,
                 # epoch=epoch, # Tricky to do this right, haven't found a way yet.
                 fn=error_params.fn,

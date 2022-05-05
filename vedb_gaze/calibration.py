@@ -14,13 +14,16 @@ except:
 import os
 
 from .utils import (
+    filter_arraydict,
     match_time_points,
     arraydict_to_dictlist, 
     dictlist_to_arraydict,
     stack_arraydicts,
     read_yaml,
+    get_function,
 )
 from .visualization import colormap_2d
+from .marker_parsing import marker_cluster_stat
 
 from pupil_recording_interface.externals.data_processing import (
     _filter_pupil_list_by_confidence,
@@ -225,6 +228,7 @@ class Calibration(object):
                  pupil_arrays,
                  calibration_arrays,
                  video_dims,
+                 cluster_reduce_fn=None,
                  min_calibration_confidence=0.6,
                  calibration_type='monocular_pl',
                  mapping_computed=False,
@@ -254,6 +258,7 @@ class Calibration(object):
         self.min_calibration_confidence = min_calibration_confidence
         self.calibration_arrays = calibration_arrays
         self.pupil_arrays = pupil_arrays
+        self.cluster_reduce_fn = cluster_reduce_fn
         self.video_dims = video_dims
         self.params = params
         self.mapping_computed = mapping_computed
@@ -266,7 +271,7 @@ class Calibration(object):
                 self.min_calibration_confidence = cal_params.pop(
                     'min_calibration_confidence')
             self.params = cal_params
-
+        # Binocular or monocular calibration
         if isinstance(pupil_arrays, (list, tuple)) and len(pupil_arrays) == 2:
             left_pupil, right_pupil = self.pupil_arrays
             if self.mapping_computed:
@@ -316,7 +321,39 @@ class Calibration(object):
                 kws = {}
             else:
                 kws = self.params
-            self.map_params = _fit_tps_gaze(self.calibration_arrays, self.pupil_arrays,
+            # NEW: Implement me for other methods
+            if self.cluster_reduce_fn is None:
+                marker_input = self.calibration_arrays
+                pupil_input = self.pupil_arrays
+            else:
+                # Since we are reducing data points fed to calibration
+                # down to 1, perform data selection based on pupil 
+                # confidence first: 
+                keep = self.pupil_arrays['confidence'] > self.min_calibration_confidence
+                pupil_input_ = filter_arraydict(self.pupil_arrays, keep)
+                marker_input_ = filter_arraydict(self.calibration_arrays, keep)
+                fn = get_function(self.cluster_reduce_fn)
+                marker_input = marker_cluster_stat(marker_input_, 
+                                                   fn=fn,
+                                                   field='norm_pos', 
+                                                   return_all_fields=True,
+                                                   clusters=None
+                                                   )
+                pupil_input = {}
+                pupil_input['timestamp'] = marker_input['timestamp']
+                pupil_input['norm_pos'] = marker_cluster_stat(pupil_input_,
+                                                              field='norm_pos',
+                                                              fn=fn,
+                                                              clusters=marker_input_['marker_cluster_index'],
+                                                              return_all_fields=False,
+                                                              )
+                pupil_input['confidence'] = marker_cluster_stat(pupil_input_,
+                                                                field='confidence',
+                                                                fn=fn,
+                                                                clusters=marker_input_['marker_cluster_index'],
+                                                                return_all_fields=False,
+                                                                )
+            self.map_params = _fit_tps_gaze(marker_input, pupil_input,
                                             min_calibration_threshold=self.min_calibration_confidence, **kws)
 
     def _get_mapper(self):
