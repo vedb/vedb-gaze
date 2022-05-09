@@ -826,7 +826,7 @@ def make_pipeline(session,
     if pupil_param_tag is None:
         pupil_out = []
     else:
-        if 'pupil' in pl_elements:
+        if 'pupil' in pl_elements and (('left' in pl_elements['pupil']) and ('right' in pl_elements['pupil'])):
             pl_path = pl_elements['pupil']['left'].fname
             pr_path = pl_elements['pupil']['right'].fname
             # TEMP: Suppress output for completed steps.
@@ -1129,7 +1129,8 @@ def make_pipeline(session,
             )
             error_out.append(
                 (error_name, getattr(gaze_pipeline, error_name).lzout.error))
-
+    else:
+        print("DAFAK SOMEHOW TAG IS NONE.")
     gaze_pipeline.set_output(pupil_out + calibration_marker_out + cal_filter_out + \
         validation_marker_out + val_filter_out + calibration_out + gaze_out + error_out)
 

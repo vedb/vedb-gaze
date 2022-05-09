@@ -632,9 +632,11 @@ def load_markers(markers, session, fn=np.nanmedian, clusters=None, crop_size=(12
     return marker_positions, marker_times, marker_crops
 
 def show_clustered_markers(markers, session, fn=np.nanmedian, clusters=None, 
-                           crop_size=(128, 128), tdelta=0.25, ax=None, n_blocks=8, imsz=0.15):
+                           crop_size=(128, 128), tdelta=0.25, ax=None, n_blocks=12, imsz=0.15):
     if (clusters is None) and ('marker_cluster_index' not in markers):
-        clusters = np.arange(len(markers['norm_pos'])) // n_blocks
+        n_pts = len(markers['norm_pos'])
+        clusters = np.floor(
+            np.linspace(0, n_blocks, n_pts, endpoint=False))
     mk_pos, mk_times, mk_frames = load_markers(markers, 
                                                session, fn=fn,
                                                clusters=clusters, 

@@ -21,6 +21,7 @@ def compute_error(marker,
                   error_smoothing_kernels=None, 
                   vertical_horizontal_smooth_error_resolution=0.25, 
                   lambd=1.0, 
+                  outlier_stds=None,
                   extrapolate=False, 
                   min_pupil_confidence=0, 
                   cluster_reduce_fn=None,
@@ -44,6 +45,10 @@ def compute_error(marker,
         If None, defaults to 0.25 * `image_resolution`
     lambd : float, optional
         lambda parameter for thin plate spline smoothing, by default 0.001
+    outlier_stds : float, optional
+        criterion for excluding outlying error estimates; error estimates will be
+        excluded if greater than this number of standard deviations from gaze
+        error median
     extrapolate : bool, optional
         flag for whether to estimate error outside of locations for validation
         markers (i.e. whether to extrapolate), by default False
@@ -107,6 +112,17 @@ def compute_error(marker,
     gz_image = gaze_pos * image_resolution
     # Magnitude of error
     gaze_err = np.linalg.norm(gz_image - vp_image, axis=1) / ppd
+    if outlier_stds is not None:
+        # Remove ridiculous outliers
+        ss = np.std(gaze_err)
+        mm = np.median(gaze_err)
+        outliers = np.abs(gaze_err - mm) > outlier_stds * ss
+        # Cull from all variables
+        gaze_err = gaze_err[~outliers]
+        vp_image = vp_image[~outliers]
+        gz_image = gz_image[~outliers]
+        marker_pos = marker_pos[~outliers]
+        gaze_pos = gaze_pos[~outliers]
     # Angle of error
     err_vector = gz_image - vp_image
     gaze_err_angle = np.arctan2(*err_vector.T)
@@ -134,10 +150,32 @@ def compute_error(marker,
             gaze_err_image = tmp
     elif method=='tps':
         x, y = marker_pos.T
-        # Left
         to_fit = np.vstack([x, y, gaze_err]).T
         theta = tps.TPS.fit(to_fit, lambd=lambd)
         gaze_err_image = tps.TPS.z(np.vstack([xg.flatten(), yg.flatten()]).T, to_fit, theta).reshape(*xg.shape)
+        if not extrapolate:
+            gaze_err_image[np.isnan(tmp)] = np.nan
+    elif method == 'tps_cv':
+        x, y = marker_pos.T
+        to_fit = np.vstack([x, y, gaze_err]).T
+        errs = np.zeros((len(lambd),))
+        for i, this_lambd in enumerate(lambd):
+            #print(f'=== lambda : {lambd} ===')
+            err_pred = np.zeros((len(to_fit),))
+            for j in range(len(to_fit)):
+                cv_keep = np.ones((len(to_fit),)) > 0
+                cv_keep[j] = False
+                theta = tps.TPS.fit(to_fit[cv_keep], lambd=this_lambd)
+                err_pred[j] = tps.TPS.z(to_fit[j,:2], to_fit[cv_keep], theta)
+            #print("Real / predicted")
+            #for ge, ep in zip(gaze_err, err_pred):
+            #    print('%0.2f / %0.2f'%(ge, ep))
+            errs[i] = np.sqrt(np.mean((err_pred - gaze_err)**2))
+        #print(errs)
+        lambda_i = np.argmin(errs)
+        theta = tps.TPS.fit(to_fit, lambd=lambd[lambda_i])
+        gaze_err_image = tps.TPS.z(
+            np.vstack([xg.flatten(), yg.flatten()]).T, to_fit, theta).reshape(*xg.shape)
         if not extrapolate:
             gaze_err_image[np.isnan(tmp)] = np.nan
     # Do not allow any error values lower than minimum estimated error
