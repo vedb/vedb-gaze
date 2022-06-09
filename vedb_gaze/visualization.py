@@ -910,24 +910,24 @@ def plot_session_qc(session,
         else:
             title='Calibration\n(raw, filtering %s)'%(calibration_marker_filtered_status)
             if do_slow_plots:
-                vedb_gaze.visualization.show_clustered_markers(use_data(calibration_marker_all),
+                show_clustered_markers(use_data(calibration_marker_all),
                                                            session, 
                                                            n_blocks=8,
                                                            ax=axs[0,0]
                                                           )
             else:
-                cols_mkc = vedb_gaze.visualization.colormap_2d(*use_data(calibration_marker_all)['norm_pos'].T)
+                cols_mkc = colormap_2d(*use_data(calibration_marker_all)['norm_pos'].T)
                 axs[0,0].scatter(*calibration_marker_all.data['norm_pos'].T, 
                                  c=cols_mkc, alpha=0.1, )
             mk_for_eyes = calibration_marker_all
     else:
         if do_slow_plots:
-            vedb_gaze.visualization.show_clustered_markers(use_data(calibration_marker_filtered),
+            show_clustered_markers(use_data(calibration_marker_filtered),
                                                        session, 
                                                        ax=axs[0,0]
                                                       )
         else:
-            cols_mkc = vedb_gaze.visualization.colormap_2d(*use_data(calibration_marker_filtered)['norm_pos'].T)
+            cols_mkc = colormap_2d(*use_data(calibration_marker_filtered)['norm_pos'].T)
             
             axs[0,0].scatter(*use_data(calibration_marker_filtered)['norm_pos'].T, c=cols_mkc)
             axs[0,0].axis([0, 1, 1, 0])
@@ -944,9 +944,9 @@ def plot_session_qc(session,
         plot_eye_at_marker(mk_for_eyes, pupil['right'], ax=axs[2, 0])
     else:
         if mk_for_eyes is not None:
-            pl_match = vedb_gaze.utils.match_time_points(use_data(mk_for_eyes), use_data(pupil['left']), )
+            pl_match = match_time_points(use_data(mk_for_eyes), use_data(pupil['left']), )
             axs[1, 0].scatter(*pl_match['norm_pos'].T, c=cols_mkc, s=pl_match['confidence']*10)
-            pr_match = vedb_gaze.utils.match_time_points(use_data(mk_for_eyes), use_data(pupil['right']), )
+            pr_match = match_time_points(use_data(mk_for_eyes), use_data(pupil['right']), )
             axs[2, 0].scatter(*pr_match['norm_pos'].T, c=cols_mkc, s=pr_match['confidence']*10)
             axs[1, 0].axis([1, 0, 1, 0])
             axs[1, 0].set_xticks([])
@@ -980,24 +980,24 @@ def plot_session_qc(session,
         else:
             title='Validation\n(filtering %s)'%(validation_marker_filtered_status)
             if do_slow_plots:
-                vedb_gaze.visualization.show_clustered_markers(use_data(validation_marker_all),
+                show_clustered_markers(use_data(validation_marker_all),
                                                                session, 
                                                                n_blocks=8,
                                                                ax=axs[0,2]
                                                               )
             else:
-                cols_mkv = vedb_gaze.visualization.colormap_2d(*use_data(validation_marker_all)['norm_pos'].T)
+                cols_mkv = colormap_2d(*use_data(validation_marker_all)['norm_pos'].T)
                 axs[0,0].scatter(*use_data(validation_marker_all)['norm_pos'].T, 
                                  c=cols_mkv, alpha=0.1, )
             mk_for_eyes = validation_marker_all
     else:
         if do_slow_plots:
-            vedb_gaze.visualization.show_clustered_markers(use_data(validation_marker_filtered[0]),
+            show_clustered_markers(use_data(validation_marker_filtered[0]),
                                                            session, 
                                                            ax=axs[0,2]
                                                           )
         else:
-            cols_mkv = vedb_gaze.visualization.colormap_2d(*use_data(validation_marker_filtered[0])['norm_pos'].T)
+            cols_mkv = colormap_2d(*use_data(validation_marker_filtered[0])['norm_pos'].T)
             
             axs[0,2].scatter(*use_data(validation_marker_filtered[0])['norm_pos'].T, c=cols_mkv)
             axs[0,2].axis([0,  1, 1, 0])
@@ -1013,9 +1013,9 @@ def plot_session_qc(session,
         plot_eye_at_marker(mk_for_eyes, pupil['right'], ax=axs[2, 2])
     else:
         if mk_for_eyes is not None:
-            pl_match = vedb_gaze.utils.match_time_points(use_data(mk_for_eyes), use_data(pupil['left']), )
+            pl_match = match_time_points(use_data(mk_for_eyes), use_data(pupil['left']), )
             axs[1, 2].scatter(*pl_match['norm_pos'].T, c=cols_mkv, s=pl_match['confidence']*10)
-            pr_match = vedb_gaze.utils.match_time_points(use_data(mk_for_eyes), use_data(pupil['right']), )
+            pr_match = match_time_points(use_data(mk_for_eyes), use_data(pupil['right']), )
             axs[2, 2].scatter(*pr_match['norm_pos'].T, c=cols_mkv, s=pr_match['confidence']*10)
             axs[1, 2].axis([1, 0, 1, 0])
             axs[1, 2].set_xticks([])
@@ -1076,7 +1076,7 @@ def plot_session_qc(session,
             error_status_right = 'not run'
     if error_status_left not in ('failed', 'not run'):
         #error['left'][0].db_load()
-        vedb_gaze.visualization.plot_error(use_data(error['left'][0]), 
+        plot_error(use_data(error['left'][0]), 
                                            gaze=use_data(gaze['left']),
                                            ax=axs[1, 3])
         axs[1,3].set_title('Err: med=%.2f, wt=%.2f'%(np.median(use_data(error['left'][0])['gaze_err']),
@@ -1088,7 +1088,7 @@ def plot_session_qc(session,
         
     if error_status_right not in ('failed', 'not run'):
         #error['right'][0].db_load()
-        vedb_gaze.visualization.plot_error(use_data(error['right'][0]), 
+        plot_error(use_data(error['right'][0]), 
                                            gaze=use_data(gaze['right']),
                                            ax=axs[2, 3])
         axs[2,3].set_title('Err: med=%.2f, wt=%.2f'%(np.median(use_data(error['right'][0])['gaze_err']),
