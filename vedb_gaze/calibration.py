@@ -104,6 +104,7 @@ def calibrate_2d_polynomial(
     screen_size=(1, 1), 
     max_stds_for_outliers=None,
     max_absolute_error_threshold=35, 
+    recursive_outlier_cut=None,
     binocular=False
 ):
     """
@@ -185,6 +186,7 @@ def calibrate_2d_polynomial(
 def calibrate_2d_monocular(cal_pt_cloud, frame_size, 
                            max_absolute_error_threshold=35,
                            max_stds_for_outliers=None,
+                           recursive_outlier_cut=None,
     ):
     method = "monocular polynomial regression"
 
@@ -316,10 +318,10 @@ def _fit_tps_gaze(calibration_markers, pupil, lambd=0.01, min_calibration_thresh
     px, py = pupil['norm_pos'].T
     keep = pupil['confidence'] > min_calibration_threshold
     # X
-    data_x = np.vstack([px[keep], py[keep], x[keep]]).T
+    data_x = np.vstack([px, py, x]).T
     theta_x = tps.TPS.fit(data_x, lambd=lambd)
     # Y
-    data_y = np.vstack([px[keep], py[keep], y[keep]]).T
+    data_y = np.vstack([px, py, y]).T
     theta_y = tps.TPS.fit(data_y, lambd=lambd)
     return data_x, theta_x, data_y, theta_y
 
@@ -345,35 +347,38 @@ def _map_tps(pupil, orig_data, mapper):
 
 DEFAULT_LAMBDA_LIST = np.logspace(np.log10(1e-6), np.log10(10), 8*2)
 def _fit_tps_gaze_cv(calibration_markers, pupil, lambd_list=DEFAULT_LAMBDA_LIST, 
-    min_calibration_threshold=0.6, max_stds_for_outliers=None):
+    min_calibration_threshold=0.6, max_stds_for_outliers=None, recursive_outlier_cut=False):
     """Cross-validated thin-plate spline fit for calibration"""
-    x, y = calibration_markers['norm_pos'].T
-    px, py = pupil['norm_pos'].T
     keep = pupil['confidence'] > min_calibration_threshold
+    mk = filter_arraydict(calibration_markers, keep)
+    pup = filter_arraydict(pupil, keep)
+    x, y = mk['norm_pos'].T
+    px, py = pup['norm_pos'].T
+    
     # X, Y data
-    data_x = np.vstack([px[keep], py[keep], x[keep]]).T
-    data_y = np.vstack([px[keep], py[keep], y[keep]]).T
-    errors = np.zeros((len(lambd_list), len(calibration_markers['norm_pos'])))
+    data_x = np.vstack([px, py, x]).T
+    data_y = np.vstack([px, py, y]).T
+    errors = np.zeros((len(lambd_list), len(mk['norm_pos'])))
     all_preds = []
     for ia, lambd in enumerate(lambd_list):
-        preds = np.zeros_like(calibration_markers['norm_pos'])
-        for i in range(len(x[keep])):
+        preds = np.zeros_like(mk['norm_pos'])
+        for i in range(len(x)):
             # Leave one out
-            fit = np.ones_like(px[keep]) > 0
+            fit = np.ones_like(px) > 0
             fit[i] = False
             # do fit
             theta_x = tps.TPS.fit(data_x[fit], lambd=lambd)
             theta_y = tps.TPS.fit(data_y[fit], lambd=lambd)
             # assess fit for subset
-            preds[i,0] = tps.TPS.z(np.vstack([px[keep][i], py[keep][i]]).T,
+            preds[i,0] = tps.TPS.z(np.vstack([px[i], py[i]]).T,
                                    data_x[fit],
                                    theta_x)
-            preds[i,1] = tps.TPS.z(np.vstack([px[keep][i], py[keep][i]]).T,
+            preds[i,1] = tps.TPS.z(np.vstack([px[i], py[i]]).T,
                                    data_y[fit],
                                    theta_y)
         # average or accumulate subset metrics for each lambda
         all_preds.append(preds)
-        errors[ia, :] = np.linalg.norm(preds - calibration_markers['norm_pos'], axis=1)
+        errors[ia, :] = np.linalg.norm(preds - mk['norm_pos'], axis=1)
     # Check for outliers
     if max_stds_for_outliers is not None:
         mean_errors_per_pt = errors.mean(0)
@@ -384,21 +389,27 @@ def _fit_tps_gaze_cv(calibration_markers, pupil, lambd_list=DEFAULT_LAMBDA_LIST,
         if np.any(outliers):
             print('Removing %d outlying data points'%np.sum(outliers))
             # (note: only do outliers once)
-            cal_cut = filter_arraydict(calibration_markers, ~outliers)
+            cal_cut = filter_arraydict(mk, ~outliers)
             print(len(cal_cut['norm_pos']))
-            pupil_cut = filter_arraydict(pupil, ~outliers)
+            pupil_cut = filter_arraydict(pup, ~outliers)
             print("Refitting...")
+            if recursive_outlier_cut:
+                mx_std = max_stds_for_outliers
+            else:
+                mx_std = None
             return _fit_tps_gaze_cv(cal_cut, pupil_cut, 
                              lambd_list=lambd_list, 
                              min_calibration_threshold=min_calibration_threshold, 
-                             max_stds_for_outliers=None)
+                             max_stds_for_outliers=mx_std)
+    else:
+        outliers = np.zeros_like(pup['timestamp']) > 1
     # Select lambda based on accumulated error / whatever metric
     best_lambda_i = np.argmin(errors.mean(1))
     # re-fit with that lambda
     theta_x = tps.TPS.fit(data_x, lambd=lambd_list[best_lambda_i])
     theta_y = tps.TPS.fit(data_y, lambd=lambd_list[best_lambda_i])
     # return parameters0
-    return data_x, theta_x, data_y, theta_y # , errors, all_preds
+    return (data_x, theta_x, data_y, theta_y), outliers # , errors, all_preds
 
 
 
@@ -537,6 +548,7 @@ class Calibration(object):
             kws = self.params
         if self.cluster_reduce_fn is None:
             marker_input = self.calibration_arrays
+            pupil_input = self.pupil_arrays
         else:
             # Since we are reducing data points fed to calibration
             # down to 1, perform data selection based on pupil
@@ -550,12 +562,36 @@ class Calibration(object):
                                                 return_all_fields=True,
                                                 clusters=None
                                                 )
+
+            pupil_input_ = filter_arraydict(self.pupil_arrays, keep)
+            pupil_input = {}
+            pupil_input['timestamp'] = marker_input['timestamp']
+            pupil_input['norm_pos'] = marker_cluster_stat(pupil_input_,
+                                                            field='norm_pos',
+                                                            fn=fn,
+                                                            clusters=marker_input_[
+                                                                'marker_cluster_index'],
+                                                            return_all_fields=False,
+                                                            )
+            pupil_input['confidence'] = marker_cluster_stat(pupil_input_,
+                                                            field='confidence',
+                                                            fn=fn,
+                                                            clusters=marker_input_[
+                                                                'marker_cluster_index'],
+                                                            return_all_fields=False,
+                                                            )
         if self.calibration_type == 'monocular_pl':
             # NOTE: zero index for matched_data here is because this is monocular,
             # and matched data only returns a 1-long tuple.
+            if 'max_stds_for_outliers' in kws:
+                _, outliers = _fit_tps_gaze_cv(marker_input, pupil_input,
+                                            min_calibration_threshold=self.min_calibration_confidence, 
+                                            **kws)
+                marker_input = filter_arraydict(marker_input, ~outliers)
             marker_list_input = arraydict_to_dictlist(marker_input)
-            is_binocular, matched_data = parse_plab_data(self.pupil_list, marker_list_input, mode='2d',
-                                                               min_calibration_confidence=self.min_calibration_confidence)
+            is_binocular, matched_data = parse_plab_data(self.pupil_list,       
+                                            marker_list_input, mode='2d',
+                                            min_calibration_confidence=self.min_calibration_confidence)
             method, result = calibrate_2d_monocular(
                 matched_data[0], frame_size=self.video_dims, **kws)
             self.map_params = result["args"]["params"]
@@ -567,30 +603,12 @@ class Calibration(object):
                 *matched_data, frame_size=self.video_dims)
             self.map_params = result['args']
         elif self.calibration_type in ('monocular_tps', 'monocular_tps_cv'):
-            if self.cluster_reduce_fn is None:
-                pupil_input = self.pupil_arrays
-            else:
-                pupil_input_ = filter_arraydict(self.pupil_arrays, keep)
-                pupil_input = {}
-                pupil_input['timestamp'] = marker_input['timestamp']
-                pupil_input['norm_pos'] = marker_cluster_stat(pupil_input_,
-                                                              field='norm_pos',
-                                                              fn=fn,
-                                                              clusters=marker_input_['marker_cluster_index'],
-                                                              return_all_fields=False,
-                                                              )
-                pupil_input['confidence'] = marker_cluster_stat(pupil_input_,
-                                                                field='confidence',
-                                                                fn=fn,
-                                                                clusters=marker_input_['marker_cluster_index'],
-                                                                return_all_fields=False,
-                                                                )
             if self.calibration_type == 'monocular_tps':
                 self.map_params = _fit_tps_gaze(marker_input, pupil_input,
                                             min_calibration_threshold=self.min_calibration_confidence, 
                                             **kws)
             elif self.calibration_type == 'monocular_tps_cv':
-                self.map_params = _fit_tps_gaze_cv(marker_input, pupil_input,
+                self.map_params, outliers = _fit_tps_gaze_cv(marker_input, pupil_input,
                                             min_calibration_threshold=self.min_calibration_confidence, 
                                             **kws)
     def _get_mapper(self):
@@ -708,7 +726,7 @@ class Calibration(object):
                          point_size=3,
                          show_data=False,
                          data_scale=20,
-                         sc=0.1,
+                         sc=0.0,
                          color=((1.0, 0.9, 0),),
                          ax_world='new',
                          ax_eye=None,
@@ -811,7 +829,7 @@ class Calibration(object):
 
             #ax_eye.axis([0, 1, 1, 0])
 
-    def _get_grid_points(self, eye=None, sc=0.1, n_horizontal_lines=10, n_vertical_lines=None, n_points=40, return_type='dictlist', min_possible_eye_points=10):
+    def _get_grid_points(self, eye=None, sc=0.0, n_horizontal_lines=10, n_vertical_lines=None, n_points=40, return_type='dictlist', min_possible_eye_points=10):
         """Get grid points for displaying calibration
         
         Parameters

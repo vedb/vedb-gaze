@@ -426,14 +426,21 @@ def load_pipeline_elements(session,
 
             try:
                 print("> Searching for error")
-                err_tags = [pupil_param_tag, cal_marker_param_tag, cal_marker_filter_param_tag,
-                            calib_param_tag, mapping_param_tag, val_marker_param_tag, val_marker_filter_param_tag, error_param_tag]
+                err_tags = [pupil_param_tag, 
+                            cal_marker_param_tag, 
+                            cal_marker_filter_param_tag,
+                            calib_param_tag, 
+                            mapping_param_tag, 
+                            val_marker_param_tag, 
+                            val_marker_filter_param_tag, 
+                            error_param_tag]
                 # Skip any steps not provided? Likely to cause bugs below
                 err_tag = '-'.join(err_tags)
                 err = _check_dict_list(session_docs, n=None,
                                         tag=err_tag, eye=eye)
                 err = sorted(err, key=lambda x: x.epoch)
                 outputs['error'][eye] = err
+                print(">> FOUND it")
             except:
                 print(">> NO error found for %s"%eye)
 

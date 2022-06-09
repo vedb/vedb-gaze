@@ -310,6 +310,7 @@ def cluster_marker_points(markers,
                           max_marker_movement=None,
                           max_pupil_movement=None,
                           normalize_time=True,
+                          cut_cluster_outliers=False, # Should be True, False for backward compatibility
                           is_verbose=True,
                           ):
     """Find clusters of points in marker data
@@ -336,6 +337,9 @@ def cluster_marker_points(markers,
         Description
     normalize_time : bool, optional
         Description
+    cut_cluster_outliers : bool, optional
+        Whether to remove clusters with label of -1 (clustering
+        algorithm has determined these to be outliers)
     is_verbose : bool, optional
         Description
     
@@ -403,8 +407,12 @@ def cluster_marker_points(markers,
         pupil_left['marker_cluster_index'] = groups
     if pupil_right is not None:
         pupil_right['marker_cluster_index'] = groups
-    # Compute various quantities for clusters, assure that clusters are within acceptable ranges for each
-    keep_clusters_binary = np.ones_like(unique_groups) > 0
+    # Compute various quantities for clusters, assure that clusters are within acceptable ranges for each    
+    if cut_cluster_outliers:
+        # Remove clusters with -1 label, these are outliers
+        keep_clusters_binary = unique_groups >= 0
+    else:
+        keep_clusters_binary = np.ones_like(unique_groups) > 0
     # Keep clusters that are within a specified interval of time
     group_durations = marker_cluster_stat(markers, field='timestamp', 
                                          fn=np.ptp, return_all_fields=False)
