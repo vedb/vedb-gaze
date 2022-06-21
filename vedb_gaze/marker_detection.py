@@ -211,7 +211,7 @@ def find_checkerboard(
     video_file,
     timestamp_file,
     checkerboard_size=(6, 8),
-    scale=1.0,
+    scale=0.5,
     refinement_window_size=(11,11),
     n_cores=12,
     start_frame=None,

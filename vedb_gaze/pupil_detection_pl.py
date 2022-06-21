@@ -4,6 +4,7 @@ except:
     print("No pupil detection available; pupil_detectors library not present")
 import numpy as np
 import file_io
+import time
 from .utils import dictlist_to_arraydict
 
 
@@ -16,6 +17,7 @@ def plabs_detect_pupil(
     progress_bar=None,
     id=None, 
     properties=None, 
+    sleep_time=0.001,
     **kwargs
     ):
     """
@@ -116,6 +118,7 @@ def plabs_detect_pupil(
             fr = np.ascontiguousarray(fr)
             # Call detector & process output
             out = det.detect(fr)
+            time.sleep(sleep_time)
             # Get rid of raw data as input; no need to keep
             if "internal_2d_raw_data" in out:
                 _ = out.pop("internal_2d_raw_data")

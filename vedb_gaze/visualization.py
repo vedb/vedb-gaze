@@ -7,7 +7,7 @@ import plot_utils
 import copy
 import os
 
-from .marker_parsing import marker_cluster_stat
+from .marker_parsing import marker_cluster_stat, split_timecourse
 from .utils import load_pipeline_elements,  match_time_points
 from . import calibration as vedbcalibration
 
@@ -802,14 +802,22 @@ def plot_session_qc(session,
     ----------
     session : _type_
         _description_
-    pupil : _type_, optional
-        _description_, by default None
+    pupil : dict, optional
+        dict with keys `left` and `right` for pupil detection results for
+        left and right eyes, respectively. Results can be either dicts
+        output by vedb_gaze.pupil_detection_pl.detect_pupils() or 
+        a PupilDetection class returned from the `vedb_store` database.
+        by default None
     calibration_marker_all : _type_, optional
         _description_, by default None
     calibration_marker_filtered : _type_, optional
         _description_, by default None
     calibration : _type_, optional
-        _description_, by default None
+        dict with keys `left` and `right` (or `both`, for binocular) 
+        for calibrations computed for left and right eyes, respectively. 
+        Results can be either dicts output by vedb_gaze.pupil_detection_pl.detect_pupils() or 
+        a PupilDetection class returned from the `vedb_store` database.
+        by default None
     validation_marker_all : _type_, optional
         _description_, by default None
     validation_marker_filtered : _type_, optional
@@ -855,7 +863,7 @@ def plot_session_qc(session,
     def get_timestamp(x, session=session):
         """Lazy function to get normalized time from dicts + session"""
         if isinstance(x, dict):
-            return x['timestamp'] - ses.start_time
+            return x['timestamp'] - session.start_time
         elif hasattr(x, 'timestamp'):
             return x.timestamp
     def check_failed(x):
@@ -917,7 +925,7 @@ def plot_session_qc(session,
                                                           )
             else:
                 cols_mkc = colormap_2d(*use_data(calibration_marker_all)['norm_pos'].T)
-                axs[0,0].scatter(*calibration_marker_all.data['norm_pos'].T, 
+                axs[0,0].scatter(*use_data(calibration_marker_all)['norm_pos'].T, 
                                  c=cols_mkc, alpha=0.1, )
             mk_for_eyes = calibration_marker_all
     else:
@@ -1082,7 +1090,7 @@ def plot_session_qc(session,
         axs[1,3].set_title('Err: med=%.2f, wt=%.2f'%(np.median(use_data(error['left'][0])['gaze_err']),
                                                     use_data(error['left'][0])['gaze_err_weighted']))
     else:
-        disp_fail(error_left_status, ax=axs[1, 3], **font_kw)
+        disp_fail(error_status_left, ax=axs[1, 3], **font_kw)
     axs[1, 3].set_xticks([])
     axs[1, 3].set_yticks([])
         
@@ -1094,40 +1102,55 @@ def plot_session_qc(session,
         axs[2,3].set_title('Err: med=%.2f, wt=%.2f'%(np.median(use_data(error['right'][0])['gaze_err']),
                                                     use_data(error['right'][0])['gaze_err_weighted']))
     else:
-        disp_fail(error_right_status, ax=axs[2, 3], **font_kw)
+        disp_fail(error_status_right, ax=axs[2, 3], **font_kw)
     axs[2, 3].set_xticks([])
     axs[2, 3].set_yticks([])
     
-    # Timeline:
+    # Timeline plot:
     # A. Pupil confidence
-    pltime = get_timestamp(pupil['left']) / 60
-    axs[0, 1].imshow(use_data(pupil['left'])['confidence'][None,:], 
-                     extent=[pltime[0], pltime[-1], 1.6, 2.4],
-                     aspect='auto',
-                     cmap='gray_r',
-                     vmin=0.6, vmax=1.0,
-                    )
-    prtime = get_timestamp(pupil['right']) / 60
-    axs[0, 1].imshow(use_data(pupil['right'])['confidence'][None,:], 
-                     extent=[prtime[0], prtime[-1], 0.6, 1.4],
-                     aspect='auto',
-                     cmap='gray_r',
-                     vmin=0.6, vmax=1.0,
-                    )
-    axs[0, 1].scatter(get_timestamp(calibration_marker_all) / 60, 
-                      np.ones_like(get_timestamp(calibration_marker_all)) * 4,
-                      c=cal_color_lt, alpha=0.05,
-                     )
+    if pupil['left'] is not None:
+        # Find epochs within pupils
+        pupil_epochs_left = split_timecourse(pupil['left'], 
+                                             max_epoch_gap=1)
+        for pe_left in pupil_epochs_left:
+            pltime = get_timestamp(pe_left[0]) / 60
+            axs[0, 1].imshow(use_data(pe_left[0])['confidence'][None,:], 
+                            extent=[pltime[0], pltime[-1], 1.6, 2.4],
+                            aspect='auto',
+                            cmap='gray_r',
+                            vmin=0.6, vmax=1.0,
+                            )
+    if pupil['right'] is not None:
+        pupil_epochs_right = split_timecourse(pupil['right'], 
+                                              max_epoch_gap=1,
+                                              )
+        for pe_right in pupil_epochs_right:
+            prtime = get_timestamp(pe_right[0]) / 60
+            axs[0, 1].imshow(use_data(pe_right[0])['confidence'][None,:], 
+                            extent=[prtime[0], prtime[-1], 0.6, 1.4],
+                            aspect='auto',
+                            cmap='gray_r',
+                            vmin=0.6, vmax=1.0,
+                            )
+    # B. All detected calibration markers
+    if calibration_marker_all is not None:
+        axs[0, 1].scatter(get_timestamp(calibration_marker_all) / 60, 
+                        np.ones_like(get_timestamp(calibration_marker_all)) * 4,
+                        c=cal_color_lt, alpha=0.05,
+                        )
+    # C. Filtered calibration markers
     if calibration_marker_filtered_status not in ('failed', 'not run'):
         axs[0, 1].scatter(get_timestamp(calibration_marker_filtered) / 60, 
                           np.ones_like(get_timestamp(calibration_marker_filtered)) * 3,
                           c=cal_color, alpha=0.05,
                          )
+    # D. All detected validation markers
     if validation_marker_status not in ('failed', 'not run'):
         axs[0, 1].scatter(get_timestamp(validation_marker_all) / 60, 
                           np.ones_like(get_timestamp(validation_marker_all)) * 6,
                           c=val_color_lt, alpha=0.05,
                          )
+    # E. Filtered validation markers
     if validation_marker_filtered_status not in ('failed', 'not run'):
         axs[0, 1].scatter(get_timestamp(validation_marker_filtered[0]) / 60, 
                           np.ones_like(get_timestamp(validation_marker_filtered[0])) * 5,
@@ -1135,10 +1158,12 @@ def plot_session_qc(session,
                          )
     
     axs[0, 1].set_ylim([0, 7])
+    axs[0, 1].set_xlim([0, session.world_time[-1] / 60])
     axs[0, 1].set_yticks(range(1, 7))
     axs[0, 1].set_yticklabels(['$Pup_R$', '$Pup_L$',
                                '$C_{filt}$','$C_{all}$', 
                                '$V_{filt}$','$V_{all}$'])
+    axs[0, 1].patch.set_color((0.92, 0.92, 0.92))
     axs[0, 1].set_title("Timeline", **font_kw)
     bins = np.linspace(-0.1, 1.1, 101)
     plot_utils.histline(use_data(pupil['left'])['confidence'], bins=bins,
