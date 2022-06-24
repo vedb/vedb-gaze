@@ -775,7 +775,7 @@ def make_pipeline(session,
                   mapping_param_tag='default_mapper',
                   error_param_tag='smooth_tps_default',
                   calibration_epoch=0,
-                  db_name='vedb_test',
+                  db_name='vedb_internal',
                   is_verbose=False,
                   ):
     """Build a gaze pipeline based on tags for each step"""
