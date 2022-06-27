@@ -967,11 +967,11 @@ def plot_session_qc(session,
             axs[1, 0].axis([1, 0, 1, 0])
             axs[1, 0].set_xticks([])
             axs[1, 0].set_yticks([])
-            axs[1, 0].set_title('L eye', **font_kw)
+            axs[1, 0].set_title('L eye pos for cal', **font_kw)
             axs[2, 0].axis([0, 1, 0, 1])
             axs[2, 0].set_xticks([])
             axs[2, 0].set_yticks([])
-            axs[2, 0].set_title('R eye', **font_kw)
+            axs[2, 0].set_title('R eye pos for cal', **font_kw)
             
     # Validation 
     validation_marker_status = 'ok'
@@ -992,7 +992,7 @@ def plot_session_qc(session,
                          ha='center', va='center', **font_kw)
             axs[0,2].axis([0,  1, 0, 1])
             title = 'Validation'
-            mk_for_eyes = None
+            mk_for_eyes_v = None
         else:
             title='Validation\n(filtering %s)'%(validation_marker_filtered_status)
             if do_slow_plots:
@@ -1005,7 +1005,7 @@ def plot_session_qc(session,
                 cols_mkv = colormap_2d(*use_data(validation_marker_all)['norm_pos'].T)
                 axs[0,0].scatter(*use_data(validation_marker_all)['norm_pos'].T, 
                                  c=cols_mkv, alpha=0.1, )
-            mk_for_eyes = validation_marker_all
+            mk_for_eyes_v = validation_marker_all
     else:
         if do_slow_plots:
             show_clustered_markers(use_data(validation_marker_filtered[0]),
@@ -1020,27 +1020,27 @@ def plot_session_qc(session,
             axs[0,2].set_yticks([])
             axs[0,2].set_xticks([])
         title = 'Validation\n(filtered)'
-        mk_for_eyes = validation_marker_filtered[0]
+        mk_for_eyes_v = validation_marker_filtered[0]
     axs[0, 2].set_title(title, **font_kw)
     
     # Validation pupils
-    if do_slow_plots and (mk_for_eyes is not None):
-        plot_eye_at_marker(mk_for_eyes, pupil['left'], ax=axs[1, 2])
-        plot_eye_at_marker(mk_for_eyes, pupil['right'], ax=axs[2, 2])
+    if do_slow_plots and (mk_for_eyes_v is not None):
+        plot_eye_at_marker(mk_for_eyes_v, pupil['left'], ax=axs[1, 2])
+        plot_eye_at_marker(mk_for_eyes_v, pupil['right'], ax=axs[2, 2])
     else:
-        if mk_for_eyes is not None:
-            pl_match = match_time_points(use_data(mk_for_eyes), use_data(pupil['left']), )
+        if mk_for_eyes_v is not None:
+            pl_match = match_time_points(use_data(mk_for_eyes_v), use_data(pupil['left']), )
             axs[1, 2].scatter(*pl_match['norm_pos'].T, c=cols_mkv, s=pl_match['confidence']*10)
-            pr_match = match_time_points(use_data(mk_for_eyes), use_data(pupil['right']), )
+            pr_match = match_time_points(use_data(mk_for_eyes_v), use_data(pupil['right']), )
             axs[2, 2].scatter(*pr_match['norm_pos'].T, c=cols_mkv, s=pr_match['confidence']*10)
             axs[1, 2].axis([1, 0, 1, 0])
             axs[1, 2].set_xticks([])
             axs[1, 2].set_yticks([])
-            axs[1, 2].set_title('L eye', **font_kw)
+            axs[1, 2].set_title('L eye pos for val', **font_kw)
             axs[2, 2].axis([0, 1, 0, 1])
             axs[2, 2].set_xticks([])
             axs[2, 2].set_yticks([])
-            axs[2, 2].set_title('R eye', **font_kw)
+            axs[2, 2].set_title('R eye pos for val', **font_kw)
     
     # Calibrations
     calibration_status_left = 'ok'
@@ -1076,7 +1076,7 @@ def plot_session_qc(session,
             cal_right = calibration['right']
         cal_right.show_calibration(sc=0,ax_world=axs[2, 1], color='orange')
     else:
-        disp_fail(calibration_status_right, ax=axs[1, 2], **font_kw)
+        disp_fail(calibration_status_right, ax=axs[2, 1], **font_kw)
     axs[2, 1].set_xticks([])
     axs[2, 1].set_yticks([])
     
