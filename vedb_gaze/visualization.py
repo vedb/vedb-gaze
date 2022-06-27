@@ -808,11 +808,19 @@ def plot_session_qc(session,
         output by vedb_gaze.pupil_detection_pl.detect_pupils() or 
         a PupilDetection class returned from the `vedb_store` database.
         by default None
-    calibration_marker_all : _type_, optional
-        _description_, by default None
-    calibration_marker_filtered : _type_, optional
-        _description_, by default None
-    calibration : _type_, optional
+    calibration_marker_all : dict or vedb_store.MarkerDetection class, optional
+        output of calibration marker detection, either a dict (directly from output
+        of vedb_gaze.marker_detection.detect_<marker> function) or a class loaded
+        from vedb_store database. Must contain 'norm_pos' field with normalized (0-1)
+        locations of detected markers and 'timestamp' field with timestamps.
+        by default None
+    calibration_marker_filtered : dict or vedb_store.MarkerDetection class, optional
+        output of calibration marker filtering (to remove spurious detections). Either 
+        a dict (directly from output of vedb_gaze.marker_parsing.find_epochs function)
+        or a MarkerDetection class loaded from vedb_store database. Must contain 'norm_pos' field with normalized (0-1)
+        locations of detected markers and 'timestamp' field with timestamps.
+        by default None
+    calibration : dict, optional
         dict with keys `left` and `right` (or `both`, for binocular) 
         for calibrations computed for left and right eyes, respectively. 
         Results can be either dicts output by vedb_gaze.pupil_detection_pl.detect_pupils() or 

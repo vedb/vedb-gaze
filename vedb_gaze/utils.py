@@ -445,7 +445,7 @@ def load_pipeline_elements(session,
                 print(">> NO error found for %s"%eye)
 
     for field in ['pupil', 'calibration', 'gaze']:
-        if len(outputs[field]) == 0:
+        if (field in outputs) and len(outputs[field]) == 0:
             _ = outputs.pop(field)
 
     if 'error' in outputs:

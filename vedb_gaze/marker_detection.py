@@ -49,7 +49,7 @@ def _find_circles_frame(args):
 
 def find_concentric_circles(video_file,
         timestamp_file,
-        scale=1.0,
+        scale=0.5,
         n_cores=12,
         start_frame=None,
         end_frame=None,
@@ -172,10 +172,7 @@ def _find_checkerboard_frame(args):
     use of multiprocessing module in conjunction with tqdm for progress bars. 
     """
     # Find the chess board corners
-    video_data, timestamp, scale, (vdim, hdim), computed_refinement_window_size, checkerboard_size = args
-    detection_flags = None
-    #found_checkerboard, corners1 = cv2.findChessboardCorners(
-    #    video_data[batch_frame], checkerboard_size, detection_flags)
+    video_data, timestamp, scale, (vdim, hdim), computed_refinement_window_size, checkerboard_size, detection_flags = args
     found_checkerboard, corners1 = cv2.findChessboardCorners(
         video_data, checkerboard_size, detection_flags)
     # If found, add object points, image points (after refining them)
@@ -210,10 +207,11 @@ def _find_checkerboard_frame(args):
 def find_checkerboard(
     video_file,
     timestamp_file,
-    checkerboard_size=(6, 8),
+    checkerboard_size=(3, 6),
     scale=0.5,
     refinement_window_size=(11,11),
     n_cores=12,
+    detection_flags=11,
     start_frame=None,
     end_frame=None,
     batch_size=None,
@@ -231,6 +229,12 @@ def find_checkerboard(
         size of checkerboard, by default (6, 8)
     scale : float, optional
         scale factor for video; values less than one reduce video size, by default 1.0
+    detection_flags : int, optional
+        detection flags for openCV findChessboardCorners (see 
+        https://docs.opencv.org/3.0.0/d9/d0c/group__calib3d.html#ga93efa9b0aa890de240ca32b11253dd4a)
+        default is 11, which is equivalent to:
+        `cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_NORMALIZE_IMAGE`
+        note: cv2.CALIB_CB_FAST_CHECK seems to have minimal effect...
     start_frame : int, optional
         frame at which to start parsing, by default None, which starts at video start
     end_frame : int, optional
@@ -287,7 +291,8 @@ def find_checkerboard(
                  repeat(scale),
                  repeat((vdim, hdim)),
                  repeat(computed_refinement_window_size),
-                 repeat(checkerboard_size))
+                 repeat(checkerboard_size),
+                 repeat(detection_flags))
         if use_multiprocessing:
             if n_cores > multiprocessing.cpu_count():
                 n_cores = multiprocessing.cpu_count()

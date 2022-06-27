@@ -169,12 +169,12 @@ def pupil_detection(session_folder,
 @pydra.mark.task
 @pydra.mark.annotate({'return': {'marker_locations': typing.Any}})
 def marker_detection(session_folder,
-                          fn,
-                          param_tag,
-                          db_tag=None,
-                          marker_type=None,
-                          db_name=None,
-                          is_verbose=False):
+                     fn,
+                     param_tag,
+                     db_tag=None,
+                     marker_type=None,
+                     db_name=None,
+                     is_verbose=False):
     """Run a pupil detection function as a pipeline step
     
     Parameters
@@ -219,24 +219,46 @@ def marker_detection(session_folder,
             pass
         # Prepare inputs
         world_time_file, world_video_file = session.paths["world_camera"]
+        # Optional, potentially present manual labels for marker times
+        marker_time_file = os.path.join(session.path, 'marker_times.yaml')
         kwargs = param_dict.params
 
     else:
         world_time_file = os.path.join(session_folder, 'world_timestamps.npy')
         world_video_file = os.path.join(session_folder, 'world.mp4')
+        marker_time_file = os.path.join(session_folder, 'marker_times.yaml')
         # Load parameters from stored yaml files
         fn_name = fn.split('.')[-1]
         param_fname = f'{fn_name}-{param_tag}.yaml'
         param_fpath = os.path.join(PARAM_DIR, param_fname)
         kwargs = utils.read_yaml(param_fpath)
-
     # convert `fn` string to callable function
     func = utils.get_function(fn)
     # Optionally add progress bar, if supported
     default_kw = get_default_kwargs(func)
     if 'progress_bar' in default_kw:
         kwargs['progress_bar'] = progress_bar
-    data = func(world_video_file, world_time_file, **kwargs,)
+    # Optionally (if present), use manual labels for marker times
+    if os.path.exists(marker_time_file):
+        marker_times = utils.read_yaml(marker_time_file)
+        if marker_type == 'concentric_circle':
+            frames = marker_times['calibration_frames']
+        elif marker_type == 'checkerboard':
+            frames = marker_times['validation_frames']
+        # Loop over list
+        data = []
+        print('Using manually labeled times.')
+        for j, (start_frame, end_frame) in enumerate(frames):
+            print('Searching epoch %d / %d'%(j + 1, len(frames)))
+            tmp = func(world_video_file, world_time_file, 
+                start_frame=start_frame,
+                end_frame=end_frame,
+                **kwargs,)
+            data.append(tmp)
+        # Concatenate results
+        data = utils.stack_arraydicts(*data)
+    else:
+        data = func(world_video_file, world_time_file, **kwargs,)
     failed = len(data['norm_pos']) == 0
     # Manage ouptut file
     if db_name is None:
