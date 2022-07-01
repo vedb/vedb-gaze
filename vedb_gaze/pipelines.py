@@ -250,6 +250,18 @@ def marker_detection(session_folder,
         print('Using manually labeled times.')
         for j, (start_frame, end_frame) in enumerate(frames):
             print('Searching epoch %d / %d'%(j + 1, len(frames)))
+            if 'start_frame' in kwargs:
+                if kwargs['start_frame'] is None:
+                    _ = kwargs.pop('start_frame')
+                else:
+                    raise ValueError("Multiple manual start / end times provided.")
+            if 'end_frame' in kwargs:
+                if kwargs['end_frame'] is None:
+                    _ = kwargs.pop('end_frame')
+                else:
+                    raise ValueError(
+                        "Multiple manual start / end times provided.")
+
             tmp = func(world_video_file, world_time_file, 
                 start_frame=start_frame,
                 end_frame=end_frame,
