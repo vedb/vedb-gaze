@@ -17,14 +17,29 @@ except ImportError:
 
 def compute_error(marker, 
                   gaze, 
-                  method='tps', 
+                  method='tps_cv', 
                   error_smoothing_kernels=None, 
-                  vertical_horizontal_smooth_error_resolution=0.25, 
-                  lambd=1.0, 
-                  outlier_stds=None,
+                  vertical_horizontal_smooth_error_resolution=(300, 400), 
+                  lambd=(1e-06,
+                         2.9286445646252375e-06,
+                         8.576958985908945e-06,
+                         2.5118864315095822e-05,
+                         7.356422544596421e-05,
+                         0.00021544346900318845,
+                         0.000630957344480193,
+                         0.0018478497974222907,
+                         0.0054116952654646375,
+                         0.01584893192461114,
+                         0.04641588833612782,
+                         0.1359356390878527,
+                         0.3981071705534969,
+                         1.165914401179831,
+                         3.414548873833601,
+                         10.0),
+                  outlier_stds=4,
                   extrapolate=False, 
-                  min_pupil_confidence=0, 
-                  cluster_reduce_fn=None,
+                  min_pupil_confidence=0.6, 
+                  cluster_reduce_fn=np.median,
                   image_resolution=(2048, 1536),
                   degrees_horiz=125,
                   degrees_vert=111,):
@@ -94,19 +109,22 @@ def compute_error(marker,
     gaze_pos = gaze_pos[gz_ci]
     
     if cluster_reduce_fn is not None:
-        clusters = marker['marker_cluster_index'][gz_ci]
-        marker_pos = marker_cluster_stat(dict(marker_pos=marker_pos),
-                                        fn=cluster_reduce_fn,
-                                        field='marker_pos',
-                                        return_all_fields=False,
-                                        clusters=clusters
-                                        )
-        gaze_pos = marker_cluster_stat(dict(gaze_pos=gaze_pos),
-                                        fn=cluster_reduce_fn,
-                                        field='gaze_pos',
-                                        return_all_fields=False,
-                                        clusters=clusters
-                                        )
+        if not 'marker_cluster_index' in marker:
+            raise ValueError("No clusters detected, can't perform cluster reduction and cross validation of lambda parameter")
+        else:
+            clusters = marker['marker_cluster_index'][gz_ci]
+            marker_pos = marker_cluster_stat(dict(marker_pos=marker_pos),
+                                            fn=cluster_reduce_fn,
+                                            field='marker_pos',
+                                            return_all_fields=False,
+                                            clusters=clusters
+                                            )
+            gaze_pos = marker_cluster_stat(dict(gaze_pos=gaze_pos),
+                                            fn=cluster_reduce_fn,
+                                            field='gaze_pos',
+                                            return_all_fields=False,
+                                            clusters=clusters
+                                            )
     
     vp_image = marker_pos * np.array(image_resolution)
     gz_image = gaze_pos * image_resolution
@@ -167,11 +185,7 @@ def compute_error(marker,
                 cv_keep[j] = False
                 theta = tps.TPS.fit(to_fit[cv_keep], lambd=this_lambd)
                 err_pred[j] = tps.TPS.z(to_fit[j,:2], to_fit[cv_keep], theta)
-            #print("Real / predicted")
-            #for ge, ep in zip(gaze_err, err_pred):
-            #    print('%0.2f / %0.2f'%(ge, ep))
             errs[i] = np.sqrt(np.mean((err_pred - gaze_err)**2))
-        #print(errs)
         lambda_i = np.argmin(errs)
         theta = tps.TPS.fit(to_fit, lambd=lambd[lambda_i])
         gaze_err_image = tps.TPS.z(

@@ -469,9 +469,9 @@ class Calibration(object):
                  pupil_arrays,
                  calibration_arrays,
                  video_dims,
-                 cluster_reduce_fn=None,
+                 cluster_reduce_fn=np.median,
                  min_calibration_confidence=0.6,
-                 calibration_type='monocular_pl',
+                 calibration_type='monocular_tps_cv',
                  mapping_computed=False,
                  **params,
                  ):
