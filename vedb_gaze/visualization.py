@@ -1121,7 +1121,7 @@ def plot_session_qc(session,
     # A. Pupil confidence
     if pupil['left'] is not None:
         # Find epochs within pupils
-        pupil_epochs_left = split_timecourse(pupil['left'], 
+        pupil_epochs_left = split_timecourse(_use_data(pupil['left']), 
                                              max_epoch_gap=1)
         for pe_left in pupil_epochs_left:
             pltime = _get_timestamp(pe_left[0], session) / 60
@@ -1132,7 +1132,7 @@ def plot_session_qc(session,
                             vmin=0.6, vmax=1.0,
                             )
     if pupil['right'] is not None:
-        pupil_epochs_right = split_timecourse(pupil['right'], 
+        pupil_epochs_right = split_timecourse(_use_data(pupil['right']), 
                                               max_epoch_gap=1,
                                               )
         for pe_right in pupil_epochs_right:
@@ -1447,7 +1447,6 @@ def make_gaze_animation(session,
 
 
 def render_gaze_video(session,
-                     dbi,
                      start_time,
                      end_time,
                      sname,
@@ -1488,8 +1487,13 @@ def render_gaze_video(session,
     # Manage time
     start_frame, end_frame = vedb_store.utils.get_frame_indices(
         start_time, end_time, session.world_time)
+    # Account for possibility that whole eye video was not analyzed to find pupils
+    start_frame_eye_left_vid, _ = vedb_store.utils.get_frame_indices(
+        start_time, end_time, session.get_video_time('eye_left') - session.start_time)
     start_frame_eye_left, _ = vedb_store.utils.get_frame_indices(
         start_time, end_time, _get_timestamp(pipeline['pupil']['left'], session))
+    start_frame_eye_right_vid, _ = vedb_store.utils.get_frame_indices(
+        start_time, end_time, session.get_video_time('eye_right') - session.start_time)
     start_frame_eye_right, _ = vedb_store.utils.get_frame_indices(
         start_time, end_time, _get_timestamp(pipeline['pupil']['right'], session))
     # Manage where to save
@@ -1514,9 +1518,9 @@ def render_gaze_video(session,
     # Load first images, establish plots
     world_vid.VideoObj.set(1, start_frame)
     success, world_im = world_vid.VideoObj.read()
-    eye_left_vid.VideoObj.set(1, start_frame_eye_left)
+    eye_left_vid.VideoObj.set(1, start_frame_eye_left_vid)
     success, eye_left = eye_left_vid.VideoObj.read()
-    eye_right_vid.VideoObj.set(1, start_frame_eye_right)
+    eye_right_vid.VideoObj.set(1, start_frame_eye_right_vid)
     success, eye_right = eye_right_vid.VideoObj.read()
     wim = ax_world.imshow(cv2.cvtColor(world_im, cv2.COLOR_BGR2RGB), extent=[
                           0, 1, 1, 0], aspect='auto')
@@ -1623,8 +1627,10 @@ def render_gaze_video(session,
     # Track indices for each; time will move faster for eye videos,
     # which are sampled at a higher rate.
     world_frame = start_frame
-    eye_left_frame = start_frame_eye_left
-    eye_right_frame = start_frame_eye_right
+    eye_left_frame = start_frame_eye_left_vid
+    eye_left_frame_data = start_frame_eye_left
+    eye_right_frame = start_frame_eye_right_vid
+    eye_right_frame_data = start_frame_eye_right
     total_iters = np.ceil((end_frame-start_frame) / frame_step)
     last_frame = copy.copy(start_frame)
     for j in progress_bar(range(start_frame, end_frame, frame_step), total=total_iters):
@@ -1634,16 +1640,18 @@ def render_gaze_video(session,
         success, world_im = world_vid.VideoObj.read()
         while eye_left_time[eye_left_frame] < world_time_this_frame:
             eye_left_frame += 1
+            eye_left_frame_data += 1
             success, eye_left = eye_left_vid.VideoObj.read()
         while eye_right_time[eye_right_frame] < world_time_this_frame:
             eye_right_frame += 1
+            eye_right_frame_data += 1
             success, eye_right = eye_right_vid.VideoObj.read()
         wim.set_data(cv2.cvtColor(world_im, cv2.COLOR_BGR2RGB))
         elim.set_data(eye_left)
         erim.set_data(eye_right)
         # Plot extra elements if desired
         if 'pupil' in elements_to_render:
-            tmpl = _use_data(pipeline['pupil']['left'])['ellipse'][eye_left_frame]
+            tmpl = _use_data(pipeline['pupil']['left'])['ellipse'][eye_left_frame_data]
             ellipse_data_left = dict((k, np.array(v) / 400)
                                      for k, v in tmpl.items())
             pupil_left[0].set_center(ellipse_data_left['center'])
@@ -1653,7 +1661,7 @@ def render_gaze_video(session,
             # Accumulate?
             pupil_left[1].set_offsets([ellipse_data_left['center']])
 
-            tmpr = _use_data(pipeline['pupil']['right'])['ellipse'][eye_right_frame]
+            tmpr = _use_data(pipeline['pupil']['right'])['ellipse'][eye_right_frame_data]
             ellipse_data_right = dict((k, np.array(v) / 400)
                                       for k, v in tmpr.items())
             pupil_right[0].set_center(ellipse_data_right['center'])
@@ -1664,8 +1672,8 @@ def render_gaze_video(session,
             pupil_right[1].set_offsets([ellipse_data_right['center']])
         if 'gaze' in elements_to_render:
             # Accumulate? Either for hist, or only matched data.
-            tmp_gl = _use_data(pipeline['gaze']['left'])['norm_pos'][eye_left_frame]
-            tmp_gr = _use_data(pipeline['gaze']['right'])['norm_pos'][eye_right_frame]
+            tmp_gl = _use_data(pipeline['gaze']['left'])['norm_pos'][eye_left_frame_data]
+            tmp_gr = _use_data(pipeline['gaze']['right'])['norm_pos'][eye_right_frame_data]
             if 'average' in gaze_to_show:
                 # Consider weighting this average; for now, just average
                 tmp_avg = (tmp_gl + tmp_gr) / 2
