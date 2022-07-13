@@ -980,6 +980,7 @@ def plot_session_qc(session,
     validation_marker_status = 'ok'
     if validation_marker_all is None:
         validation_marker_status = 'not run'
+        validation_marker_filtered_status = 'not run'
     elif check_failed(validation_marker_all):
         validation_marker_status = 'failed'
     validation_marker_filtered_status = 'ok'    
@@ -989,7 +990,9 @@ def plot_session_qc(session,
         validation_marker_filtered_status = 'failed'
     
     if validation_marker_filtered_status in ('not run','failed'):
-        if validation_marker_status in ('not_run','failed'):
+        # No filtering; show base validation detection if available
+        if validation_marker_status in ('not run','failed'):
+            #disp_fail()
             axs[0,2].text(0.5, 0.5, 'detection: %s\nfiltering: %s'%(validation_marker_status,
                                                                     validation_marker_filtered_status),
                          ha='center', va='center', **font_kw)
@@ -1066,7 +1069,7 @@ def plot_session_qc(session,
             cal_left = calibration['left']
         cal_left.show_calibration(sc=0, ax_world=axs[1, 1], color='steelblue')
     else:
-        disp_fail(calibration_status_left, ax=axs[1, 2], **font_kw)
+        disp_fail(calibration_status_left, ax=axs[1, 1], **font_kw)
     axs[1, 1].set_xticks([])
     axs[1, 1].set_yticks([])
     
