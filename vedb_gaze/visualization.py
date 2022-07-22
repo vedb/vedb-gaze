@@ -187,7 +187,7 @@ def make_world_eye_axes(eye_left_ax=True, eye_right_ax=True, fig_scale=5):
     return world_ax, eye_left_ax, eye_right_ax
 
 
-def plot_eye_at_marker(marker, pupils,
+def plot_eye_at_marker(session, marker, pupils,
                        ax=None,
                        alpha=1.0,
                        confidence_cmap=plt.cm.viridis,
@@ -196,10 +196,12 @@ def plot_eye_at_marker(marker, pupils,
     """"""
     # Get rid of me. Circular dependency.
     import vedb_store
-    marker.db_load()
-    session = marker.session
-    pupils.db_load()
-    eye = pupils.eye
+    # marker.db_load()
+    # session = marker.session
+    #pupils.db_load()
+    #eye = pupils.eye
+    eye_id = _use_data(pupils)['id'][0]
+    eye = ['right','left'][eye_id]
     if ax is None:
         fig, ax = plt.subplots()
         fig.patch.set_color('w')
@@ -231,7 +233,7 @@ def plot_eye_at_marker(marker, pupils,
     eye_frames_fin = [vedb_store.utils.get_frame_indices(
         ct[1], ct[1]+1, eye_time)[0] for ct in cluster_times_all]
     pupil_conf = _use_data(pupils)['confidence']
-    print(pupil_conf.shape)
+    #print(pupil_conf.shape)
     cluster_confidence = [np.median(pupil_conf[st:fin])
                           for st, fin in zip(eye_frames_st, eye_frames_fin)]
     confidence = np.array(cluster_confidence)
@@ -810,6 +812,10 @@ def plot_session_qc(session,
                     cal_color_lt = (0.5, 0.9, 0.5),
                     font_kw=None,
                     fpath=None,
+                    close_figure=False,
+                    pupil_confidence_threshold = 0.7,
+                    calibration_marker_epoch=0,
+                    validation_marker_epoch=0,
                     do_memory_cleanup=False,
                    ):
     """Make quality control plot for VEDB session
@@ -876,20 +882,41 @@ def plot_session_qc(session,
         _description_, by default False
     """
     # Lazy functions         
+    def check_status(x):
+        """Determine whether an input failed or was never run"""
+        # Recursive call for dicts
+        if isinstance(x, dict) and (('left' in x) or ('right' in x) or ('both' in x)):
+            return dict((k, check_status(v)) for k, v in x.items())
+        if x is None:
+            return 'not run'
+        failed = check_failed(x)
+        if failed:
+            return 'failed'
+        else:
+            return 'ok'
 
     def check_failed(x):
+        if x is None:
+            return True
         if isinstance(x, dict):
             failed = all([len(v) == 0 for v in x.values()])
+        elif isinstance(x, list):
+            failed = (len(x) == 0) or np.all([check_failed(x_) for x_ in x])
         else:
             failed = x.failed
         return failed
-    def disp_fail(msg, ax, **font_kw):
-        ax.text(0.5, 0.5, msg, ha='center', va='center', **font_kw)
-        ax.axis([0,  1, 0, 1])
 
+    def disp_fail(msg, ax, title=None, axis=(0, 1, 0, 1), **font_kw):
+        ax.text(0.5, 0.5, msg, ha='center', va='center', **font_kw)
+        ax.axis(axis)
+        if title is not None:
+            ax.set_title(title)
+    
+    # Inputs
     if font_kw is None:
         # Defaults (kwargs should not be dicts or other mutable types, so substitute here)
         font_kw = dict(fontname='Helvetica', fontsize=14)
+
     if session.dbi is not None:
         session.db_load()
     
@@ -903,31 +930,32 @@ def plot_session_qc(session,
                     **font_kw)
     else:
         fig = axs[0,0].figure
+
+    # Check status of all steps
+    steps = ['pupil',
+             'calibration_marker_all',
+             'calibration_marker_filtered',
+             'calibration',
+             'validation_marker_all',
+             'validation_marker_filtered',
+             'gaze',
+             'error']
+    status = {}
+    for step in steps:
+        status[step] = check_status(locals()[step])
+
     # Plot
-    # Calibration marker detection & filtering status
-    calibration_marker_status = 'ok'
-    calibration_marker_filtered_status = 'ok'
-    if calibration_marker_all is None:
-        calibration_marker_status = 'not run'
-    elif check_failed(calibration_marker_all):
-        calibration_marker_status = 'failed'
-    
-    if calibration_marker_filtered is None:
-        calibration_marker_filtered_status = 'not run'
-    elif check_failed(calibration_marker_filtered):
-        calibration_marker_filtered_status = 'failed'
-    if calibration_marker_filtered_status in ('not run', 'failed'):
-        if check_failed(calibration_marker_all):
-            axs[0,0].text(0.5, 0.5, 'detection: %s\nfiltering: %s'%(calibration_marker_status,
-                                                                    calibration_marker_filtered_status),
-                         ha='center', va='center', **font_kw)
-            axs[0,0].axis([0,  1, 0, 1])
-            axs[0,0].set_yticks([])
-            axs[0,0].set_xticks([])
-            title = 'Calibration'
+    if status['calibration_marker_filtered'] in ('not run', 'failed'):
+        # Filtering of calibration markers failed; try fallback plot of unfiltered marker position
+        if status['calibration_marker_all'] in ('not run', 'failed'):
+            # Detection has failed entirely
+            msg = 'detection: %s\nfiltering: %s'%(calibration_marker_status,
+                                                  calibration_marker_filtered_status)
+            disp_fail(msg, axs[0,0], title='Calibration Markers', axis=[0, 1, 0, 1])
             mk_for_eyes = None
         else:
-            title='Calibration\n(raw, filtering %s)'%(calibration_marker_filtered_status)
+            # Raw detection OK, just filtering failed
+            title='Calibration Markers\n(raw, filtering %s)'%(calibration_marker_filtered_status)
             if do_slow_plots:
                 show_clustered_markers(_use_data(calibration_marker_all),
                                                            session, 
@@ -940,6 +968,7 @@ def plot_session_qc(session,
                                  c=cols_mkc, alpha=0.1, )
             mk_for_eyes = calibration_marker_all
     else:
+        # Calibration markers detected and filtered correctly.
         if do_slow_plots:
             show_clustered_markers(_use_data(calibration_marker_filtered),
                                                        session, 
@@ -949,225 +978,199 @@ def plot_session_qc(session,
             cols_mkc = colormap_2d(*_use_data(calibration_marker_filtered)['norm_pos'].T)
             
             axs[0,0].scatter(*_use_data(calibration_marker_filtered)['norm_pos'].T, c=cols_mkc)
-            axs[0,0].axis([0, 1, 1, 0])
-            axs[0,0].set_yticks([])
-            axs[0,0].set_xticks([])
-        title = 'Calibration\n(filtered)'
+        title = 'Calibration Markers\n(filtered)'
         mk_for_eyes = calibration_marker_filtered
-
+    # For whatever circumstance, set axis
+    axs[0,0].axis([0, 1, 1, 0])
+    axs[0,0].set_yticks([])
+    axs[0,0].set_xticks([])
     axs[0,0].set_title(title, **font_kw)
     
-    # Calibration pupils
-    if do_slow_plots and (mk_for_eyes is not None):
-        plot_eye_at_marker(mk_for_eyes, pupil['left'], ax=axs[1, 0])
-        plot_eye_at_marker(mk_for_eyes, pupil['right'], ax=axs[2, 0])
+    # Pupils during calibration
+    if status['pupil'] in ('failed', 'not run') or \
+        status['calibration_marker_all'] in ('failed', 'not run'):
+        msg_both = 'Pupil detection: %s\nCalibration marker%s'%(status['pupil'],
+            status['calibration_marker_all'])
+        disp_fail(msg_both, axs[1, 0], title='Left eye position\n during calibration', 
+            axis=[1, 0, 1, 0],)
+        disp_fail(msg_both, axs[2, 0], title='Right eye position\n during calibration', 
+            axis=[0, 1, 0, 1],)
     else:
-        if mk_for_eyes is not None:
-            pl_match = match_time_points(_use_data(mk_for_eyes), _use_data(pupil['left']), )
-            axs[1, 0].scatter(*pl_match['norm_pos'].T, c=cols_mkc, s=pl_match['confidence']*10)
-            pr_match = match_time_points(_use_data(mk_for_eyes), _use_data(pupil['right']), )
-            axs[2, 0].scatter(*pr_match['norm_pos'].T, c=cols_mkc, s=pr_match['confidence']*10)
-            axs[1, 0].axis([1, 0, 1, 0])
-            axs[1, 0].set_xticks([])
-            axs[1, 0].set_yticks([])
-            axs[1, 0].set_title('L eye pos for cal', **font_kw)
-            axs[2, 0].axis([0, 1, 0, 1])
-            axs[2, 0].set_xticks([])
-            axs[2, 0].set_yticks([])
-            axs[2, 0].set_title('R eye pos for cal', **font_kw)
+        # At least both pupils haven't failed.
+        # To do: catch case for which pupil detection fails entirely for one eye. Seems unlikely.
+        if do_slow_plots and (mk_for_eyes is not None):
+            plot_eye_at_marker(session, mk_for_eyes, pupil['left'], ax=axs[1, 0])
+            plot_eye_at_marker(session, mk_for_eyes, pupil['right'], ax=axs[2, 0])
+        else:
+            if mk_for_eyes is not None:
+                pl_match = match_time_points(_use_data(mk_for_eyes), _use_data(pupil['left']), )
+                axs[1, 0].scatter(*pl_match['norm_pos'].T, c=cols_mkc, s=pl_match['confidence']*10)
+                pr_match = match_time_points(_use_data(mk_for_eyes), _use_data(pupil['right']), )
+                axs[2, 0].scatter(*pr_match['norm_pos'].T, c=cols_mkc, s=pr_match['confidence']*10)
+                axs[1, 0].set_xticks([])
+                axs[1, 0].set_yticks([])
+                axs[1, 1].set_aspect('equal', 'box')
+                axs[1, 0].axis([1, 0, 1, 0])
+                axs[1, 0].set_title('Left eye position\n during calibration', **font_kw)
+                axs[2, 0].set_xticks([])
+                axs[2, 0].set_yticks([])
+                axs[2, 1].set_aspect('equal', 'box')
+                axs[2, 0].axis([0, 1, 0, 1])
+                axs[2, 0].set_title('Right eye position\n during calibration', **font_kw)
             
     # Validation 
-    validation_marker_status = 'ok'
-    if validation_marker_all is None:
-        validation_marker_status = 'not run'
-        validation_marker_filtered_status = 'not run'
-    elif check_failed(validation_marker_all):
-        validation_marker_status = 'failed'
-    validation_marker_filtered_status = 'ok'    
-    if validation_marker_filtered is None:
-        validation_marker_filtered_status = 'not run'
-    elif check_failed(validation_marker_filtered[0]):
-        validation_marker_filtered_status = 'failed'
-    
-    if validation_marker_filtered_status in ('not run','failed'):
-        # No filtering; show base validation detection if available
-        if validation_marker_status in ('not run','failed'):
-            #disp_fail()
-            axs[0,2].text(0.5, 0.5, 'detection: %s\nfiltering: %s'%(validation_marker_status,
-                                                                    validation_marker_filtered_status),
-                         ha='center', va='center', **font_kw)
-            axs[0,2].axis([0,  1, 0, 1])
-            title = 'Validation'
+    if status['validation_marker_filtered'] in ('not run', 'failed'):
+        # Filtering of validation markers failed; try fallback plot of unfiltered marker position
+        if status['validation_marker_all'] in ('not run', 'failed'):
+            # Detection has failed entirely
+            msg = 'detection: %s\nfiltering: %s'%(validation_marker_status,
+                                                  validation_marker_filtered_status)
+            disp_fail(msg, axs[0,2], title='Validation Markers', axis=[0, 1, 0, 1])
             mk_for_eyes_v = None
+            title = 'Validation Markers'
         else:
-            title='Validation\n(filtering %s)'%(validation_marker_filtered_status)
+            # Raw detection OK, just filtering failed
+            title='Validation Markers\n(raw, filtering %s)'%(validation_marker_filtered_status)
             if do_slow_plots:
                 show_clustered_markers(_use_data(validation_marker_all),
-                                                               session, 
-                                                               n_blocks=8,
-                                                               ax=axs[0,2]
-                                                              )
+                                                           session, 
+                                                           n_blocks=8,
+                                                           ax=axs[0,2]
+                                                          )
             else:
                 cols_mkv = colormap_2d(*_use_data(validation_marker_all)['norm_pos'].T)
-                axs[0,0].scatter(*_use_data(validation_marker_all)['norm_pos'].T, 
+                axs[0,2].scatter(*_use_data(validation_marker_all)['norm_pos'].T, 
                                  c=cols_mkv, alpha=0.1, )
             mk_for_eyes_v = validation_marker_all
     else:
+        # validation markers detected and filtered correctly.
         if do_slow_plots:
-            show_clustered_markers(_use_data(validation_marker_filtered[0]),
-                                                           session, 
-                                                           ax=axs[0,2]
-                                                          )
+            show_clustered_markers(_use_data(validation_marker_filtered[validation_marker_epoch]),
+                                                       session, 
+                                                       ax=axs[0,2]
+                                                      )
         else:
-            cols_mkv = colormap_2d(*_use_data(validation_marker_filtered[0])['norm_pos'].T)
+            cols_mkv = colormap_2d(*_use_data(validation_marker_filtered[validation_marker_epoch])['norm_pos'].T)
             
-            axs[0,2].scatter(*_use_data(validation_marker_filtered[0])['norm_pos'].T, c=cols_mkv)
-            axs[0,2].axis([0,  1, 1, 0])
-            axs[0,2].set_yticks([])
-            axs[0,2].set_xticks([])
-        title = 'Validation\n(filtered)'
-        mk_for_eyes_v = validation_marker_filtered[0]
-    axs[0, 2].set_title(title, **font_kw)
+            axs[0,2].scatter(*_use_data(validation_marker_filtered[validation_marker_epoch])['norm_pos'].T, c=cols_mkv)
+        title = 'Validation Markers\n(filtered)'
+        mk_for_eyes_v = validation_marker_filtered[validation_marker_epoch]
+    # For whatever circumstance, set axis
+    axs[0,2].axis([0, 1, 1, 0])
+    axs[0,2].set_yticks([])
+    axs[0,2].set_xticks([])
+    axs[0,2].set_title(title, **font_kw)
     
-    # Validation pupils
-    if do_slow_plots and (mk_for_eyes_v is not None):
-        plot_eye_at_marker(mk_for_eyes_v, pupil['left'], ax=axs[1, 2])
-        plot_eye_at_marker(mk_for_eyes_v, pupil['right'], ax=axs[2, 2])
+    # Pupils during validation
+    if status['pupil'] in ('failed', 'not run') or \
+        status['validation_marker_all'] in ('failed', 'not run'):
+        msg_both = 'Pupil detection: %s\nvalidation marker%s'%(status['pupil'],
+            status['validation_marker_all'])
+        disp_fail(msg_both, axs[1, 2], title='Left eye position\n during validation', 
+            axis=[1, 0, 1, 0],)
+        disp_fail(msg_both, axs[2, 2], title='Right eye position\n during validation', 
+            axis=[0, 1, 0, 1],)
     else:
-        if mk_for_eyes_v is not None:
-            pl_match = match_time_points(_use_data(mk_for_eyes_v), _use_data(pupil['left']), )
-            axs[1, 2].scatter(*pl_match['norm_pos'].T, c=cols_mkv, s=pl_match['confidence']*10)
-            pr_match = match_time_points(_use_data(mk_for_eyes_v), _use_data(pupil['right']), )
-            axs[2, 2].scatter(*pr_match['norm_pos'].T, c=cols_mkv, s=pr_match['confidence']*10)
-            axs[1, 2].axis([1, 0, 1, 0])
-            axs[1, 2].set_xticks([])
-            axs[1, 2].set_yticks([])
-            axs[1, 2].set_title('L eye pos for val', **font_kw)
-            axs[2, 2].axis([0, 1, 0, 1])
-            axs[2, 2].set_xticks([])
-            axs[2, 2].set_yticks([])
-            axs[2, 2].set_title('R eye pos for val', **font_kw)
-    
+        # At least both pupils haven't failed.
+        # To do: catch case for which pupil detection fails entirely for one eye. Seems unlikely.
+        if do_slow_plots and (mk_for_eyes_v is not None):
+            plot_eye_at_marker(session, mk_for_eyes_v, pupil['left'], ax=axs[1, 2])
+            plot_eye_at_marker(session, mk_for_eyes_v, pupil['right'], ax=axs[2, 2])
+        else:
+            if mk_for_eyes_v is not None:
+                pl_match = match_time_points(_use_data(mk_for_eyes_v), _use_data(pupil['left']), )
+                axs[1, 2].scatter(*pl_match['norm_pos'].T, c=cols_mkv, s=pl_match['confidence']*10)
+                pr_match = match_time_points(_use_data(mk_for_eyes_v), _use_data(pupil['right']), )
+                axs[2, 2].scatter(*pr_match['norm_pos'].T, c=cols_mkv, s=pr_match['confidence']*10)
+                axs[1, 2].set_xticks([])
+                axs[1, 2].set_yticks([])
+                axs[1, 1].set_aspect('equal', 'box')
+                axs[1, 2].axis([1, 0, 1, 0])
+                axs[1, 2].set_title('Left eye position\n during validation', **font_kw)
+                axs[2, 2].set_xticks([])
+                axs[2, 2].set_yticks([])
+                axs[2, 1].set_aspect('equal', 'box')
+                axs[2, 2].axis([0, 1, 0, 1])
+                axs[2, 2].set_title('Right eye position\n during validation', **font_kw)
+
     # Calibrations
-    calibration_status_left = 'ok'
-    calibration_status_right = 'ok'
-    if calibration is None:
-        calibration_status_left = calibration_status_right = 'not run'
+    if status['calibration'] in ('not run', 'failed'):
+        disp_fail('Calibration %s'%status['calibration'], axs[1, 1], **font_kw)
+        disp_fail('Calibration %s'%status['calibration'], axs[2, 1], **font_kw)
     else:
-        if calibration['left'] is None:
-            calibration_status_left = 'not run'
-        if calibration['right'] is None:
-            calibration_status_right = 'not run'
-    # Left
-    if calibration_status_left not in ('failed', 'not run'):
-        if not isinstance(calibration['left'], vedbcalibration.Calibration):
-            # Is a vedb_store Calibration object, loaded from database, which can
-            # itself load an instance of a vedb_gaze Calibration
-            calibration['left'].load()
-            cal_left = calibration['left'].calibration
-        else:
-            cal_left = calibration['left']
-        cal_left.show_calibration(sc=0, ax_world=axs[1, 1], color='steelblue')
-    else:
-        disp_fail(calibration_status_left, ax=axs[1, 1], **font_kw)
-    axs[1, 1].set_xticks([])
-    axs[1, 1].set_yticks([])
-    
-    # Right    
-    if calibration_status_right not in ('failed', 'not run'):
-        if not isinstance(calibration['right'], vedbcalibration.Calibration):
-            calibration['right'].load()
-            cal_right = calibration['right'].calibration
-        else:
-            cal_right = calibration['right']
-        cal_right.show_calibration(sc=0,ax_world=axs[2, 1], color='orange')
-    else:
-        disp_fail(calibration_status_right, ax=axs[2, 1], **font_kw)
-    axs[2, 1].set_xticks([])
-    axs[2, 1].set_yticks([])
-    
-    # Error
-    error_status_left = 'ok'
-    error_status_right = 'ok'
-    if error is None:
-        error_status_left = error_status_right = 'not run'
-    else:
-        if error['left'] is None:
-            error_status_left = 'not run'
-        if error['right'] is None:
-            error_status_right = 'not run'
-    if error_status_left not in ('failed', 'not run'):
-        #error['left'][0].db_load()
-        plot_error(_use_data(error['left'][0]), 
-                                           gaze=_use_data(gaze['left']),
-                                           ax=axs[1, 3])
-        axs[1,3].set_title('Err: med=%.2f, wt=%.2f'%(np.median(_use_data(error['left'][0])['gaze_err']),
-                                                    _use_data(error['left'][0])['gaze_err_weighted']))
-    else:
-        disp_fail(error_status_left, ax=axs[1, 3], **font_kw)
-    axs[1, 3].set_xticks([])
-    axs[1, 3].set_yticks([])
+        for lr, ax, cal_colors in zip(['left', 'right'], axs[1:3, 1], ['steelblue', 'orange']):
+            if status['calibration'][lr] in ('failed', 'not run'):
+               disp_fail(status['calibration'][lr], ax=ax, **font_kw)
+            else:
+                if not isinstance(calibration[lr], vedbcalibration.Calibration):
+                    # Is a vedb_store Calibration object, loaded from database, which can
+                    # itself load an instance of a vedb_gaze Calibration
+                    calibration[lr].load()
+                    this_cal = calibration[lr].calibration
+                else:
+                    this_cal = calibration[lr]
+                this_cal.show_calibration(sc=0, ax_world=ax, color=cal_colors)
+                
+            ax.set_xticks([])
+            ax.set_yticks([])
         
-    if error_status_right not in ('failed', 'not run'):
-        #error['right'][0].db_load()
-        plot_error(_use_data(error['right'][0]), 
-                                           gaze=_use_data(gaze['right']),
-                                           ax=axs[2, 3])
-        axs[2,3].set_title('Err: med=%.2f, wt=%.2f'%(np.median(_use_data(error['right'][0])['gaze_err']),
-                                                    _use_data(error['right'][0])['gaze_err_weighted']))
+    # Error
+    if status['error'] in ('not run', 'failed'):
+        disp_fail('Errror calculation %s'%status['error'], axs[1, 3], **font_kw)
+        disp_fail('Errror calculation %s'%status['error'], axs[2, 3], **font_kw)
     else:
-        disp_fail(error_status_right, ax=axs[2, 3], **font_kw)
-    axs[2, 3].set_xticks([])
-    axs[2, 3].set_yticks([])
+        for lr, ax in zip(['left', 'right'], axs[1:3,3]):
+            if status['error'][lr] in ('failed', 'not run'):
+                disp_fail('Errror calculation %s'%status['error'][lr], ax, **font_kw)
+            else:
+                plot_error(_use_data(error[lr][validation_marker_epoch]), 
+                                                gaze=_use_data(gaze[lr]),
+                                                ax=ax)
+                ax.set_title('Err: med=%.2f, wt=%.2f'%(np.median(_use_data(error[lr][validation_marker_epoch])['gaze_err']),
+                                                            _use_data(error[lr][validation_marker_epoch])['gaze_err_weighted']))
+            ax.set_xticks([])
+            ax.set_yticks([])
+        
     
     # Timeline plot:
     # A. Pupil confidence
-    if pupil['left'] is not None:
-        # Find epochs within pupils
-        pupil_epochs_left = split_timecourse(_use_data(pupil['left']), 
-                                             max_epoch_gap=1)
-        for pe_left in pupil_epochs_left:
-            pltime = _get_timestamp(pe_left[0], session) / 60
-            axs[0, 1].imshow(_use_data(pe_left[0])['confidence'][None,:], 
-                            extent=[pltime[0], pltime[-1], 1.6, 2.4],
-                            aspect='auto',
-                            cmap='gray_r',
-                            vmin=0.6, vmax=1.0,
-                            )
-    if pupil['right'] is not None:
-        pupil_epochs_right = split_timecourse(_use_data(pupil['right']), 
-                                              max_epoch_gap=1,
-                                              )
-        for pe_right in pupil_epochs_right:
-            prtime = _get_timestamp(pe_right[0], session) / 60
-            axs[0, 1].imshow(_use_data(pe_right[0])['confidence'][None,:], 
-                            extent=[prtime[0], prtime[-1], 0.6, 1.4],
-                            aspect='auto',
-                            cmap='gray_r',
-                            vmin=0.6, vmax=1.0,
-                            )
+    
+    #if pupil['left'] is not None:
+    for offset, lr in enumerate(['right','left']):
+        if (status['pupil'] not in ('failed', 'not run')) and (status['pupil'][lr] not in ('failed', 'not run')):
+            # Find epochs within pupils
+            pupil_epochs = split_timecourse(_use_data(pupil[lr]), 
+                                                max_epoch_gap=1)
+            for pe in pupil_epochs:
+                ptime = _get_timestamp(pe[0], session) / 60
+                axs[0, 1].imshow(_use_data(pe[0])['confidence'][None,:], 
+                                extent=[ptime[0], ptime[-1], offset + 0.6, offset + 1.4],
+                                aspect='auto',
+                                cmap='gray_r',
+                                vmin=0.6, vmax=1.0,
+                                )
     # B. All detected calibration markers
-    if calibration_marker_all is not None:
+    if status['calibration_marker_all'] not in ('failed', 'not run'):
         axs[0, 1].scatter(_get_timestamp(calibration_marker_all, session) / 60, 
                         np.ones_like(_get_timestamp(calibration_marker_all, session)) * 4,
                         c=cal_color_lt, alpha=0.05,
                         )
     # C. Filtered calibration markers
-    if calibration_marker_filtered_status not in ('failed', 'not run'):
+    if status['calibration_marker_filtered'] not in ('failed', 'not run'):
         axs[0, 1].scatter(_get_timestamp(calibration_marker_filtered, session) / 60, 
                           np.ones_like(_get_timestamp(calibration_marker_filtered, session)) * 3,
                           c=cal_color, alpha=0.05,
                          )
     # D. All detected validation markers
-    if validation_marker_status not in ('failed', 'not run'):
+    if status['validation_marker_all'] not in ('failed', 'not run'):
         axs[0, 1].scatter(_get_timestamp(validation_marker_all, session) / 60, 
                           np.ones_like(_get_timestamp(validation_marker_all, session)) * 6,
                           c=val_color_lt, alpha=0.05,
                          )
     # E. Filtered validation markers
-    if validation_marker_filtered_status not in ('failed', 'not run'):
-        axs[0, 1].scatter(_get_timestamp(validation_marker_filtered[0], session) / 60, 
-                          np.ones_like(_get_timestamp(validation_marker_filtered[0], session)) * 5,
+    if status['validation_marker_filtered'] not in ('failed', 'not run'):
+        axs[0, 1].scatter(_get_timestamp(validation_marker_filtered[validation_marker_epoch], session) / 60, 
+                          np.ones_like(_get_timestamp(validation_marker_filtered[validation_marker_epoch], session)) * 5,
                           c=val_color, alpha=0.05,
                          )
     
@@ -1179,22 +1182,27 @@ def plot_session_qc(session,
                                '$V_{filt}$','$V_{all}$'])
     axs[0, 1].patch.set_color((0.92, 0.92, 0.92))
     axs[0, 1].set_title("Timeline", **font_kw)
-    bins = np.linspace(-0.1, 1.1, 101)
-    plot_utils.histline(_use_data(pupil['left'])['confidence'], bins=bins,
-                        ax=axs[0, 3], color='steelblue')
-    plot_utils.histline(_use_data(pupil['right'])['confidence'], bins=bins,
-                        ax=axs[0, 3], color='orange')
-    yl = axs[0, 3].get_ylim()
-    conf_thr = 0.7
-    axs[0, 3].vlines(conf_thr, yl[0], yl[1]*0.6, ls='--', lw=2, color='k')
-    axs[0, 3].text(conf_thr, yl[1]*0.8, 'L: %0.1f%% kept\nR: %0.1f%%kept'%(
-            np.mean(_use_data(pupil['left'])['confidence'] > conf_thr) * 100,
-            np.mean(_use_data(pupil['right'])['confidence'] > conf_thr) * 100),
-                  ha='center', 
-                  va='center', **font_kw)
-    axs[0, 3].set_yticks([])
-    axs[0, 3].set_xticks([0, 0.5, 1])
-    axs[0, 3].set_title('Pupil Confidence', **font_kw)
+    a = 1
+    
+    # % gaze kept plot
+    if status['pupil'] not in ('failed', 'not run'):
+        bins = np.linspace(-0.1, 1.1, 101)
+        if status['pupil']['left'] not in ('failed', 'not run'):
+            plot_utils.histline(_use_data(pupil['left'])['confidence'], bins=bins,
+                                ax=axs[0, 3], color='steelblue')
+            lpct = np.mean(_use_data(pupil['left'])['confidence'] > pupil_confidence_threshold) * 100
+        if status['pupil']['right'] not in ('failed', 'not run'):
+            plot_utils.histline(_use_data(pupil['right'])['confidence'], bins=bins,
+                                ax=axs[0, 3], color='orange')
+            rpct = np.mean(_use_data(pupil['right'])['confidence'] > pupil_confidence_threshold) * 100
+        yl = axs[0, 3].get_ylim()
+        axs[0, 3].vlines(pupil_confidence_threshold, yl[0], yl[1]*0.6, ls='--', lw=2, color='k')
+        axs[0, 3].text(pupil_confidence_threshold, yl[1]*0.8, 'L: %0.1f%% kept\nR: %0.1f%%kept'%(
+                lpct, rpct), ha='center', va='center', **font_kw)
+        axs[0, 3].set_yticks([])
+        axs[0, 3].set_xticks([0, 0.5, 1])
+        axs[0, 3].set_title('Pupil Confidence', **font_kw)
+
     # Clear data to save memory
     if do_memory_cleanup:
         for d in [calibration_marker_all, 
@@ -1215,6 +1223,7 @@ def plot_session_qc(session,
                         d[lr]._data = None
     if fpath is not None:
         fig.savefig(fpath, dpi=100)
+    if close_figure:
         plt.close(fig)
 
 

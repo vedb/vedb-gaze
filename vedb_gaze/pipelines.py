@@ -516,7 +516,7 @@ def compute_calibration(marker_fname,
             marker_data = markers.data
             pupil_data = [p.data for p in pupil_docs]
             kwargs = calibration_params.params
-            vdims = session.recording_system.world_camera.resolution
+            vdims = session.world_camera.resolution
     else:
         # Get marker file
         if session_folder.endswith(os.sep):
