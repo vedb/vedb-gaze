@@ -899,11 +899,19 @@ def plot_session_qc(session,
         if x is None:
             return True
         if isinstance(x, dict):
-            failed = all([len(v) == 0 for v in x.values()])
+            list_values = []
+            for vv in x.values():
+                if isinstance(vv, (list, np.ndarray)):
+                    list_values.append(len(vv))
+            print(list_values)
+            failed = all([v == 0 for v in list_values])
         elif isinstance(x, list):
             failed = (len(x) == 0) or np.all([check_failed(x_) for x_ in x])
         else:
-            failed = x.failed
+            if hasattr(x, 'failed'):
+                failed = x.failed
+            else:
+                failed = False # ??
         return failed
 
     def disp_fail(msg, ax, title=None, axis=(0, 1, 0, 1), **font_kw):
@@ -949,13 +957,14 @@ def plot_session_qc(session,
         # Filtering of calibration markers failed; try fallback plot of unfiltered marker position
         if status['calibration_marker_all'] in ('not run', 'failed'):
             # Detection has failed entirely
-            msg = 'detection: %s\nfiltering: %s'%(calibration_marker_status,
-                                                  calibration_marker_filtered_status)
+            msg = 'detection: %s\nfiltering: %s'%(status['calibration_marker_all'],
+                                                  status['calibration_marker_filtered'])
             disp_fail(msg, axs[0,0], title='Calibration Markers', axis=[0, 1, 0, 1])
             mk_for_eyes = None
+            title = 'Calibration Markers'
         else:
             # Raw detection OK, just filtering failed
-            title='Calibration Markers\n(raw, filtering %s)'%(calibration_marker_filtered_status)
+            title='Calibration Markers\n(raw, filtering %s)'%(status['calibration_marker_filtered'])
             if do_slow_plots:
                 show_clustered_markers(_use_data(calibration_marker_all),
                                                            session, 
@@ -1023,14 +1032,14 @@ def plot_session_qc(session,
         # Filtering of validation markers failed; try fallback plot of unfiltered marker position
         if status['validation_marker_all'] in ('not run', 'failed'):
             # Detection has failed entirely
-            msg = 'detection: %s\nfiltering: %s'%(validation_marker_status,
-                                                  validation_marker_filtered_status)
+            msg = 'detection: %s\nfiltering: %s'%(status['validation_marker_all'],
+                                                  status['validation_marker_filtered'])
             disp_fail(msg, axs[0,2], title='Validation Markers', axis=[0, 1, 0, 1])
             mk_for_eyes_v = None
             title = 'Validation Markers'
         else:
             # Raw detection OK, just filtering failed
-            title='Validation Markers\n(raw, filtering %s)'%(validation_marker_filtered_status)
+            title='Validation Markers\n(raw, filtering %s)'%(status['validation_marker_filtered'])
             if do_slow_plots:
                 show_clustered_markers(_use_data(validation_marker_all),
                                                            session, 
@@ -1191,10 +1200,14 @@ def plot_session_qc(session,
             plot_utils.histline(_use_data(pupil['left'])['confidence'], bins=bins,
                                 ax=axs[0, 3], color='steelblue')
             lpct = np.mean(_use_data(pupil['left'])['confidence'] > pupil_confidence_threshold) * 100
+        else:
+            lpct = 0
         if status['pupil']['right'] not in ('failed', 'not run'):
             plot_utils.histline(_use_data(pupil['right'])['confidence'], bins=bins,
                                 ax=axs[0, 3], color='orange')
             rpct = np.mean(_use_data(pupil['right'])['confidence'] > pupil_confidence_threshold) * 100
+        else:
+            rpct = 0
         yl = axs[0, 3].get_ylim()
         axs[0, 3].vlines(pupil_confidence_threshold, yl[0], yl[1]*0.6, ls='--', lw=2, color='k')
         axs[0, 3].text(pupil_confidence_threshold, yl[1]*0.8, 'L: %0.1f%% kept\nR: %0.1f%%kept'%(
