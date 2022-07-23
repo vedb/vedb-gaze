@@ -240,7 +240,13 @@ def stack_arraydicts(*inputs, sort_key=None):
         output.extend(arrlist)
     if sort_key is not None:
         output = sorted(output, key=lambda x: x[sort_key])
-    output = dictlist_to_arraydict(output)
+    # Handle case in which all fields are empty. 
+    if len(output) > 0: 
+        output = dictlist_to_arraydict(output)
+    else:
+        # In degenerate case, return first dict of empty arrays
+        # This might be a one-off fix, unclear
+        output = inputs[0]
     return output
 
 
