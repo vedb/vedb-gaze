@@ -2,11 +2,9 @@
 
 import numpy as np
 import pandas as pd
-import thinplate as tps  # library here: http://github.com/cheind/py-thin-plate-spline
-from scipy import interpolate
 import yaml
+import copy
 import os
-
 
 
 def read_pl_gaze_csv(session_folder, output_id):
@@ -28,22 +26,6 @@ def write_yaml(parameters, fpath):
     """Thin wrapper to write a dictionary to a yaml file"""
     with open(fpath, mode='w') as fid:
         yaml.dump(pd.params, fid)
-
-
-def filter_list(lst, idx):
-    """Convenience function to select items from a list with a binary index"""
-    return [x for x, i in zip(lst, idx) if i]
-
-
-def stack_arraydicts(*inputs, sort_key=None):
-    output = arraydict_to_dictlist(inputs[0])
-    for arrdict in inputs[1:]:
-        arrlist = arraydict_to_dictlist(arrdict)
-        output.extend(arrlist)
-    if sort_key is not None:
-        output = sorted(output, key=lambda x: x[sort_key])
-    output = dictlist_to_arraydict(output)
-    return output
 
 
 def unique(seq, idfun=None):
@@ -80,7 +62,7 @@ def unique(seq, idfun=None):
     return result, seen
 
 
-def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
+def match_time_points(*data, fn=np.median, window=None):
     """Compute gaze position across matched time points
     
     Currently selects all gaze points within half a video frame of 
@@ -91,20 +73,21 @@ def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
     data that are e.g. dictionaries. These must be removed before 
     calling this function for now. 
     """
-    if (window is None) and (all_timestamps is not None):
-        # Make window width half median frame rate, by default
-        wt_frame_time = np.median(np.diff(all_timestamps))
-        window = wt_frame_time / 2
-    marker_time = data[0]['timestamp']
-    #print(marker_time)
-    # marker time is at the frame rate of the world camera, which
-    # captured the markers
+    if window is None:
+        # Overwite any function argument if window is set to none;
+        # this will do nearest-frame resampling
+        def fn(x, axis=None):
+            return x
+    # Timestamps for first input are used as a reference
+    reference_time = data[0]['timestamp']
+    # Preallocate output list
     output = []
+    # Loop over all subsequent fields of data
     for d in data[1:]:
         t = d['timestamp'].copy()
-        new_dict = dict(timestamp=marker_time)
-        #print(new_dict)
-        for i, frame_time in enumerate(marker_time):
+        new_dict = dict(timestamp=reference_time)
+        # Loop over all timestamps in time reference
+        for i, frame_time in enumerate(reference_time):
             # Preallocate lists
             if i == 0:
                 for k, v in d.items():
@@ -112,16 +95,16 @@ def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
                         continue
                     shape = v.shape
                     new_dict[k] = np.zeros(
-                        (len(marker_time),) + shape[1:], dtype=v.dtype)
+                        (len(reference_time),) + shape[1:], dtype=v.dtype)
             if window is None:
+                # Nearest frame selection
                 fr = np.argmin(np.abs(t - frame_time))
                 time_index = np.zeros_like(t) > 0
                 time_index[fr] = True
-
-                def fn(x, axis=None):
-                    return x
             else:
+                # Selection of all frames within window
                 time_index = np.abs(t - frame_time) < window
+            # Loop over fields of inputs
             for k, v in d.items():
                 if k == 'timestamp':
                     continue
@@ -129,17 +112,18 @@ def match_time_points(*data, all_timestamps=None, fn=np.median, window=None):
                     frame = fn(v[time_index], axis=0)
                     new_dict[k][i] = frame
                 except:
-                    # Field does not support
-                    #print(k)
+                    # Field does not support indexing of this kind;
+                    # This should probably raise a warning at least...
                     pass
+        # Remove any keys with all fields deleted
         keys = list(d.keys())
         for k in keys:
             if len(new_dict[k]) == 0:
                 _ = new_dict.pop(k)
             else:
-                watnow = np.asarray(new_dict[k])
                 new_dict[k] = np.asarray(new_dict[k])
         output.append(new_dict)
+    # Flexible output, depending on number of inputs
     if len(output) == 1:
         return output[0]
     else:
@@ -236,6 +220,36 @@ def time_to_index(onsets_offsets, timeline):
     return out
 
 
+def filter_list(lst, idx):
+    """Convenience function to select items from a list with a binary index"""
+    return [x for x, i in zip(lst, idx) if i]
+
+
+def filter_arraydict(arraydict, idx):
+    """Apply the same index to all fields in a dict of arrays"""
+    dictlist = arraydict_to_dictlist(arraydict)
+    dictlist = filter_list(dictlist, idx)
+    out = dictlist_to_arraydict(dictlist)
+    return out
+
+
+def stack_arraydicts(*inputs, sort_key=None):
+    output = arraydict_to_dictlist(inputs[0])
+    for arrdict in inputs[1:]:
+        arrlist = arraydict_to_dictlist(arrdict)
+        output.extend(arrlist)
+    if sort_key is not None:
+        output = sorted(output, key=lambda x: x[sort_key])
+    # Handle case in which all fields are empty. 
+    if len(output) > 0: 
+        output = dictlist_to_arraydict(output)
+    else:
+        # In degenerate case, return first dict of empty arrays
+        # This might be a one-off fix, unclear
+        output = inputs[0]
+    return output
+
+
 def dictlist_to_arraydict(dictlist):
     """Convert from pupil format list of dicts to dict of arrays"""
     dict_fields = list(dictlist[0].keys())
@@ -262,105 +276,198 @@ def arraydict_to_dictlist(arraydict):
     return out
 
 
-def compute_error(marker_pos,
-                  gaze_left,
-                  gaze_right,
-                  method='tps',
-                  error_smoothing_kernels=None,
-                  vhres=None,
-                  lambd=0.001,
-                  extrapolate=False,
-                  confidence_threshold=0,
-                  image_resolution=(2048, 1536),
-                  degrees_horiz=125,
-                  degrees_vert=111,):
-    """Compute error at set points and interpolation between those points
+def get_function(function_name):
+    """Load a function to a variable by name
 
     Parameters
     ----------
-    marker : array
-        estimated marker position and confidence; needs field 'norm_pos' only ()
-
+    function_name : str
+        string name for function (including module)
     """
-    # Pixels per degree, coarse estimate for error computation
-    # Default degrees are 125 x 111, this assumes all data is collected
-    # w/ standard size, which is not true given new lenses (defaults must be
-    # updated for new lenses)
-    hppd = image_resolution[0] / degrees_horiz
-    vppd = image_resolution[1] / degrees_vert
-    # Coarse, so it goes
-    ppd = np.mean([vppd, hppd])
+    if callable(function_name):
+        return function_name
+    import importlib
+    fn_path = function_name.split('.')
+    module_name = '.'.join(fn_path[:-1])
+    fn_name = fn_path[-1]
+    module = importlib.import_module(module_name)
+    func = getattr(module, fn_name)
+    return func
 
-    # < This section will vary with input format >
-    # Estimated gaze position, in normalized (0-1) coordinates
-    gl = gaze_left['norm_pos']
-    # Gaze left - confidence index (gl_ci)
-    gl_ci = gaze_left['confidence'] > confidence_threshold
-    gr = gaze_right['norm_pos']
-    # Gaze right - confidence index (gl_ci)
-    gr_ci = gaze_right['confidence'] > confidence_threshold
-    # < To here>
 
-    vp_image = marker_pos * image_resolution
-    gl_image = gl * image_resolution
-    gr_image = gr * image_resolution
-
-    err_left = np.linalg.norm(gl_image[gl_ci] - vp_image[gl_ci], axis=1) / ppd
-    err_right = np.linalg.norm(gr_image[gr_ci] - vp_image[gr_ci], axis=1) / ppd
-    if vhres is None:
-        hres, vres = (np.array(image_resolution) * 0.25).astype(np.int)
+def _check_dict_list(dict_list, n=1, **kwargs):
+    tmp = dict_list
+    for k, v in kwargs.items():
+        tmp = [x for x in tmp if (hasattr(x, k)) and (getattr(x, k) == v)]
+    if n is None:
+        return tmp
+    if len(tmp) == n:
+        if n == 1:
+            return tmp[0]
+        else:
+            return tmp
     else:
-        vres, hres = vhres
-    # Interpolate to get error over whole image
-    vpix = np.linspace(0, 1, vres)
-    hpix = np.linspace(0, 1, hres)
-    xg, yg = np.meshgrid(hpix, vpix)
-    # Grid interpolation, basic
-    if gl_ci.sum() == 0:
-        tmp_l = np.ones_like(xg) * np.nan
-    else:
-        tmp_l = interpolate.griddata(vp[gl_ci], np.nan_to_num(
-            err_left, nan=np.nanmean(err_left)), (xg, yg), method='cubic', fill_value=np.nan)
-    if gr_ci.sum() == 0:
-        tmp_r = np.ones_like(xg) * np.nan
-    else:
-        tmp_r = interpolate.griddata(vp[gr_ci], np.nan_to_num(err_right, nan=np.nanmean(
-            err_right)), (xg, yg), method='cubic', fill_value=np.nan)
+        raise ValueError('Requested number of items not found')
 
-    if method == 'griddata':
-        err_left_image = tmp_l
-        err_right_image = tmp_r
-        if error_smoothing_kernels is not None:
-            tmp_l = np.nan_to_num(err_left_image, nan=np.nanmax(err_left))
-            tmp_r = np.nan_to_num(err_right_image, nan=np.nanmax(err_right))
-            tmp_l = cv2.blur(tmp_l, error_smoothing_kernels)
-            tmp_r = cv2.blur(tmp_r, error_smoothing_kernels)
-            tmp_l[np.isnan(err_left_image)] = np.nan
-            tmp_r[np.isnan(err_right_image)] = np.nan
-            err_left_image = tmp_l
-            err_right_image = tmp_r
+def load_pipeline_elements(session,
+                           pupil_param_tag='plab_default',
+                           pupil_drift_param_tag=None,
+                           cal_marker_param_tag='circles_halfres',
+                           cal_marker_filter_param_tag='cluster_default',
+                           calib_param_tag='monocular_tps_default',
+                           calibration_epoch=0,
+                           val_marker_param_tag='checkerboard_halfres',
+                           val_marker_filter_param_tag='basic_split',
+                           mapping_param_tag='default_mapper',
+                           error_param_tag='smooth_tps_default',
+                           dbi=None,
+                           is_verbose=True,
+                           ):
+    if dbi is None:
+        dbi = session.dbi
+    verbosity = copy.copy(dbi.is_verbose)
+    dbi.is_verbose = is_verbose >= 1
+    
+    # Get all documents associated with session
+    session_docs = dbi.query(session=session._id)
+    # Create outputs dict
+    outputs = dict(session=session)
+    
+    if pupil_param_tag is not None:
+        outputs['pupil'] = {}
+        for eye in ['left', 'right']:
+            try:
+                print("> Searching for %s pupil (%s)" % (eye, pupil_param_tag))
+                outputs['pupil'][eye] = _check_dict_list(session_docs, 
+                                                         n=1,
+                                                         type='PupilDetection', 
+                                                         tag=pupil_param_tag, 
+                                                         eye=eye)
+                print(">> FOUND %s pupil" % (eye))
+            except:
+                print('>> NOT found')
 
-    elif method == 'tps':
-        x, y = marker_pos.T
-        # Left
-        to_fit_l = np.vstack([x[gl_ci], y[gl_ci], err_left]).T
-        theta_l = tps.TPS.fit(to_fit_l, lambd=lambd)
-        err_left_image = tps.TPS.z(np.vstack(
-            [xg.flatten(), yg.flatten()]).T, to_fit_l, theta_l).reshape(*xg.shape)
-        # Right
-        to_fit_r = np.vstack([x[gr_ci], y[gr_ci], err_right]).T
-        theta_r = tps.TPS.fit(to_fit_r, lambd=lambd)
-        err_right_image = tps.TPS.z(np.vstack(
-            [xg.flatten(), yg.flatten()]).T, to_fit_r, theta_r).reshape(*xg.shape)
-        if not extrapolate:
-            err_left_image[np.isnan(tmp_l)] = np.nan
-            err_right_image[np.isnan(tmp_r)] = np.nan
+    if cal_marker_param_tag is not None:
+        try:
+            print("> Searching for calibration markers...")
+            outputs['calibration_marker_all'] = _check_dict_list(
+                session_docs, n=1, tag=cal_marker_param_tag, epoch='all')
+            print(">> FOUND it")
+        except:
+            print('>> NOT found')
 
-    return dict(left=err_left,
-                right=err_right,
-                left_image=err_left_image,
-                right_image=err_right_image,
-                left_marker_pos=marker_pos[gl_ci],
-                right_marker_pos=marker_pos[gr_ci],
-                xgrid=xg,
-                ygrid=yg)
+    if cal_marker_filter_param_tag is not None:
+        try:
+            print("> Searching for filtered calibration markers...")
+            cfiltered_tag = '-'.join([cal_marker_param_tag,
+                                      cal_marker_filter_param_tag])
+            outputs['calibration_marker_filtered'] = _check_dict_list(
+                session_docs, n=1, tag=cfiltered_tag, epoch=calibration_epoch)
+            print(">> FOUND it")
+        except:
+            print('>> NOT found')
+
+    if val_marker_param_tag is not None:
+        try:
+            print("> Searching for validation markers...")
+            outputs['validation_marker_all'] = _check_dict_list(
+                session_docs, n=1, tag=val_marker_param_tag, epoch='all')
+            print(">> FOUND it")
+        except:
+            print('>> NOT found')
+
+    if val_marker_filter_param_tag is not None:
+        try:
+            print("> Searching for filtered validation markers...")
+            vfiltered_tag = '-'.join([val_marker_param_tag,
+                                    val_marker_filter_param_tag])
+            tmp = _check_dict_list(session_docs, n=None, tag=vfiltered_tag)
+            if len(tmp) == 0:
+                1/0  # error out, nothing found
+            tmp = sorted(tmp, key=lambda x: x.epoch)
+            outputs['validation_marker_filtered'] = tmp
+            print(">> FOUND %d" % (len(tmp)))
+        except:
+            print(">> NOT found")
+
+    if calib_param_tag is not None:
+        if 'monocular' in calib_param_tag:
+            eyes = ['left', 'right']
+        else:
+            eyes = ['both']
+
+        for ie, eye in enumerate(eyes):
+            if ie == 0:
+                outputs['calibration'] = {}
+                outputs['gaze'] = {}
+                outputs['error'] = {}
+            try:
+                print("> Searching for %s calibration" % eye)
+                calib_tag_full = '-'.join([pupil_param_tag, 
+                                           cal_marker_param_tag, 
+                                           cal_marker_filter_param_tag,
+                                           calib_param_tag])
+                outputs['calibration'][eye] = _check_dict_list(session_docs, 
+                    n=1,
+                    type='Calibration',
+                    tag=calib_tag_full,
+                    eye=eye,
+                    epoch=calibration_epoch)
+                print(">> FOUND %s calibration" % eye)
+            except:
+                print('>> NOT found')
+            try:
+                print("> Searching for %s gaze" % eye)
+                gaze_tag_full = '-'.join([pupil_param_tag,
+                                          cal_marker_param_tag,
+                                          cal_marker_filter_param_tag,
+                                          calib_param_tag,
+                                          mapping_param_tag,
+                                          ])
+                outputs['gaze'][eye] = _check_dict_list(session_docs, n=1, 
+                    type='Gaze', tag=gaze_tag_full, eye=eye)
+                print(">> FOUND %s gaze" % eye)
+            except:
+                print('>> NOT found')
+
+            try:
+                print("> Searching for error")
+                err_tags = [pupil_param_tag, 
+                            cal_marker_param_tag, 
+                            cal_marker_filter_param_tag,
+                            calib_param_tag, 
+                            mapping_param_tag, 
+                            val_marker_param_tag, 
+                            val_marker_filter_param_tag, 
+                            error_param_tag]
+                # Skip any steps not provided? Likely to cause bugs below
+                err_tag = '-'.join(err_tags)
+                err = _check_dict_list(session_docs, n=None,
+                                        tag=err_tag, eye=eye)
+                err = sorted(err, key=lambda x: x.epoch)
+                outputs['error'][eye] = err
+                print(">> FOUND it")
+            except:
+                print(">> NO error found for %s"%eye)
+
+    for field in ['pupil', 'calibration', 'gaze']:
+        if (field in outputs) and len(outputs[field]) == 0:
+            _ = outputs.pop(field)
+
+    if 'error' in outputs:
+        if 'left' in outputs['error']:
+            n_err_left = len(outputs['error']['left'])
+        else:
+            n_err_left = 0
+        if 'right' in outputs['error']:
+            n_err_right = len(outputs['error']['right'])
+        else:
+            n_err_right = 0
+        if (n_err_left != n_err_right):
+            print("Error mismatch: %d on left, %d on right" %
+              (n_err_left, n_err_right))
+            _ = outputs.pop("error")
+
+    dbi.is_verbose = verbosity
+
+    return outputs

@@ -14,12 +14,16 @@ except:
 import os
 
 from .utils import (
+    filter_arraydict,
     match_time_points,
     arraydict_to_dictlist, 
     dictlist_to_arraydict,
+    stack_arraydicts,
     read_yaml,
+    get_function,
 )
 from .visualization import colormap_2d
+from .marker_parsing import marker_cluster_stat
 
 from pupil_recording_interface.externals.data_processing import (
     _filter_pupil_list_by_confidence,
@@ -30,6 +34,10 @@ from pupil_recording_interface.externals.data_processing import (
 from pupil_recording_interface.externals import calibrate_2d
 
 from pupil_recording_interface.externals.gaze_mappers import Binocular_Gaze_Mapper
+
+import logging
+logger = logging.getLogger(__name__)
+
 
 BASE_DIR, _ = os.path.split(__file__)
 BASE_DIR = pathlib.Path(BASE_DIR)
@@ -88,13 +96,105 @@ def parse_plab_data(pupil_list, ref_list, mode="2d", min_calibration_confidence=
 
     return binocular, extracted_data
 
+### NEW
 
-def calibrate_2d_monocular(cal_pt_cloud, frame_size):
+
+def calibrate_2d_polynomial(
+    cal_pt_cloud, 
+    screen_size=(1, 1), 
+    max_stds_for_outliers=None,
+    max_absolute_error_threshold=35, 
+    recursive_outlier_cut=None,
+    binocular=False
+):
+    """
+    we do a simple two pass fitting to a pair of bi-variate polynomials
+    return the function to map vector
+    """
+    # fit once using all avaiable data
+    model_n = 7
+    if binocular:
+        model_n = 13
+
+    cal_pt_cloud = np.array(cal_pt_cloud)
+
+    cx, cy, err_x, err_y = calibrate_2d.fit_poly_surface(cal_pt_cloud, model_n)
+    err_dist, err_mean, err_rms = calibrate_2d.fit_error_screen(err_x, err_y, screen_size)
+    if max_stds_for_outliers is not None:
+        print("Errors:")
+        print(err_dist.tolist())
+        inliers = err_dist < np.median(err_dist) + max_stds_for_outliers * np.std(err_dist)
+        err_ok = err_dist <= max_absolute_error_threshold
+    else:
+        print("Not computing errors based on std..")
+        inliers = err_dist <= max_absolute_error_threshold
+        err_ok = inliers
+    if np.any(err_ok):  # did not disregard all points..
+        # fit again disregarding extreme outliers
+        cx, cy, new_err_x, new_err_y = calibrate_2d.fit_poly_surface(
+            cal_pt_cloud[inliers], model_n
+        )
+        map_fn = calibrate_2d.make_map_function(cx, cy, model_n)
+        new_err_dist, new_err_mean, new_err_rms = calibrate_2d.fit_error_screen(
+            new_err_x, new_err_y, screen_size
+        )
+        print("Second pass errors:")
+        print(new_err_dist)
+        logger.info(
+            "first iteration. root-mean-square residuals: {}, in pixel".format(
+                err_rms
+            )
+        )
+        logger.info(
+            "second iteration: ignoring outliers. root-mean-square residuals: {} "
+            "in pixel".format(new_err_rms)
+        )
+
+        used_num = np.sum(inliers)
+        complete_num = cal_pt_cloud.shape[0]
+        logger.info(
+            "used {} data points out of the full dataset {}: "
+            "subset is {:.2f} percent".format(
+                used_num, complete_num, 100 * float(used_num) / complete_num
+            )
+        )
+
+        return (
+            map_fn,
+            inliers,
+            ([p.tolist() for p in cx], [p.tolist() for p in cy], model_n),
+        )
+
+    else:  
+        # did disregard all points. The data cannot be represented by the model in
+        # a meaningful way:
+        map_fn = calibrate_2d.make_map_function(cx, cy, model_n)
+        logger.error(
+            "First iteration. root-mean-square residuals: {} in pixel, "
+            "this is bad!".format(err_rms)
+        )
+        logger.error(
+            "The data cannot be represented by the model in a meaningful way."
+        )
+        return (
+            map_fn,
+            inliers,
+            ([p.tolist() for p in cx], [p.tolist() for p in cy], model_n),
+        )
+
+### /NEW
+def calibrate_2d_monocular(cal_pt_cloud, frame_size, 
+                           max_absolute_error_threshold=35,
+                           max_stds_for_outliers=None,
+                           recursive_outlier_cut=None,
+    ):
     method = "monocular polynomial regression"
 
-    map_fn, inliers, params = calibrate_2d.calibrate_2d_polynomial(
-        cal_pt_cloud, frame_size, binocular=False
-    )
+    map_fn, inliers, params = calibrate_2d_polynomial(
+        cal_pt_cloud, frame_size, binocular=False, 
+        max_absolute_error_threshold=max_absolute_error_threshold,
+        max_stds_for_outliers=max_stds_for_outliers,
+        )
     if not inliers.any():
         return method, None
 
@@ -113,13 +213,13 @@ def calibrate_2d_binocular(cal_pt_cloud_binocular, cal_pt_cloud0,
     )
     if not inliers.any():
         return method, None
-
+    # Right eye
     map_fn, inliers, params_eye0 = calibrate_2d.calibrate_2d_polynomial(
         cal_pt_cloud0, frame_size, binocular=False
     )
     if not inliers.any():
         return method, None
-
+    # Left eye
     map_fn, inliers, params_eye1 = calibrate_2d.calibrate_2d_polynomial(
         cal_pt_cloud1, frame_size, binocular=False
     )
@@ -136,16 +236,92 @@ def calibrate_2d_binocular(cal_pt_cloud_binocular, cal_pt_cloud0,
     return method, result
 
 
+def _fit_rbf_cv(calibration_markers, pupil,
+                smoothnesses=np.linspace(-0.001, 10, 100),
+                methods=['thin-plate', 'multiquadric', 'linear', 'cubic'],
+                ):
+    from scipy.interpolate import Rbf as RBF
+    """
+    Fit an interpolator to the points via LOO x-validation
+    @param smoothnesses:		list<float>, smoothnesses to try for interpolations
+    @param methods:				list<str>, methods to try
+    @param varianceThreshold:	float?, threshold of variance in the calibration positions to throw away
+    @param glintVector:			bool, use pupil-glint vector instead of just the pupil position?
+    @param searchThreshold:		float, if the error is above this threshold, search over delays/durations. will not search if is 0
+    @return:
+    """
+
+    pupil_pos = pupil['norm_pos']
+    marker_pos = calibration_markers['norm_pos']
+
+    def LeaveOneOutXval(smoothness, method):
+        """
+        Leave on out estimation, returns RMS deviation from actual points
+        @param smoothness:
+        @param method:
+        @return:
+        """
+        estimates = np.zeros([len(marker_pos), 2])
+        for i in range(len(marker_pos)):
+            fit = np.ones((len(marker_pos),)) > 0
+            fit[i] = False
+
+            horizontal = RBF(pupil_pos[fit, 0],
+                             pupil_pos[fit, 1],
+                             marker_pos[fit, 0],
+                             function=method,
+                             smooth=smoothness)
+
+            vertical = RBF(pupil_pos[fit, 0],
+                           pupil_pos[fit, 1],
+                           marker_pos[fit, 1],
+                           function=method,
+                           smooth=smoothness)
+
+            estimates[i, :] = [horizontal(pupil_pos[i, 0],
+                                          pupil_pos[i, 1]),
+                               vertical(pupil_pos[i, 0],
+                                        pupil_pos[i, 1])]
+
+        return np.sqrt(np.mean((estimates - marker_pos) ** 2))
+
+    errors = np.zeros([len(smoothnesses), len(methods)])
+    for s in range(len(smoothnesses)):
+        for m in range(len(methods)):
+            errors[s, m] = LeaveOneOutXval(smoothnesses[s], methods[m])
+
+    s, m = np.unravel_index(errors.argmin(), errors.shape)
+    bestSmoothness = smoothnesses[s]
+    bestMethod = methods[m]
+    bestError = errors[s, m]
+
+    horizontalInterpolater = RBF(pupil_pos[:, 0],
+                                 pupil_pos[:, 1],
+                                 marker_pos[:, 0],
+                                 function=bestMethod,
+                                 smooth=bestSmoothness)
+
+    verticalInterpolater = RBF(pupil_pos[:, 0],
+                               pupil_pos[:, 1],
+                               marker_pos[:, 1],
+                               function=bestMethod,
+                               smooth=bestSmoothness)
+
+    #if (searchThreshold > 0) and (bestError > searchThreshold):
+    #    print('Min error {:.2f} is above threshold of {:.0f} and will be searching'.format(bestError, searchThreshold))
+    #    SearchAndFit()
+    return horizontalInterpolater, verticalInterpolater, bestMethod, bestSmoothness, bestError
+
 def _fit_tps_gaze(calibration_markers, pupil, lambd=0.01, min_calibration_threshold=0.6, ):
 
     x, y = calibration_markers['norm_pos'].T
     px, py = pupil['norm_pos'].T
     keep = pupil['confidence'] > min_calibration_threshold
     # X
-    data_x = np.vstack([px[keep], py[keep], x[keep]]).T
+    data_x = np.vstack([px, py, x]).T
     theta_x = tps.TPS.fit(data_x, lambd=lambd)
     # Y
-    data_y = np.vstack([px[keep], py[keep], y[keep]]).T
+    data_y = np.vstack([px, py, y]).T
     theta_y = tps.TPS.fit(data_y, lambd=lambd)
     return data_x, theta_x, data_y, theta_y
 
@@ -166,6 +342,75 @@ def _map_tps(pupil, orig_data, mapper):
     xp, yp = pupil['norm_pos'].T
     out = tps.TPS.z(np.vstack([xp, yp]).T, orig_data, mapper)
     return out
+
+
+
+DEFAULT_LAMBDA_LIST = np.logspace(np.log10(1e-6), np.log10(10), 8*2)
+def _fit_tps_gaze_cv(calibration_markers, pupil, lambd_list=DEFAULT_LAMBDA_LIST, 
+    min_calibration_threshold=0.6, max_stds_for_outliers=None, recursive_outlier_cut=False):
+    """Cross-validated thin-plate spline fit for calibration"""
+    keep = pupil['confidence'] > min_calibration_threshold
+    mk = filter_arraydict(calibration_markers, keep)
+    pup = filter_arraydict(pupil, keep)
+    x, y = mk['norm_pos'].T
+    px, py = pup['norm_pos'].T
+    
+    # X, Y data
+    data_x = np.vstack([px, py, x]).T
+    data_y = np.vstack([px, py, y]).T
+    errors = np.zeros((len(lambd_list), len(mk['norm_pos'])))
+    all_preds = []
+    for ia, lambd in enumerate(lambd_list):
+        preds = np.zeros_like(mk['norm_pos'])
+        for i in range(len(x)):
+            # Leave one out
+            fit = np.ones_like(px) > 0
+            fit[i] = False
+            # do fit
+            theta_x = tps.TPS.fit(data_x[fit], lambd=lambd)
+            theta_y = tps.TPS.fit(data_y[fit], lambd=lambd)
+            # assess fit for subset
+            preds[i,0] = tps.TPS.z(np.vstack([px[i], py[i]]).T,
+                                   data_x[fit],
+                                   theta_x)
+            preds[i,1] = tps.TPS.z(np.vstack([px[i], py[i]]).T,
+                                   data_y[fit],
+                                   theta_y)
+        # average or accumulate subset metrics for each lambda
+        all_preds.append(preds)
+        errors[ia, :] = np.linalg.norm(preds - mk['norm_pos'], axis=1)
+    # Check for outliers
+    if max_stds_for_outliers is not None:
+        mean_errors_per_pt = errors.mean(0)
+        mm = np.median(mean_errors_per_pt)
+        ss = np.std(mean_errors_per_pt)
+        # Only check for outlying HIGH errors
+        outliers = mean_errors_per_pt > mm + max_stds_for_outliers * ss
+        if np.any(outliers):
+            print('Removing %d outlying data points'%np.sum(outliers))
+            # (note: only do outliers once)
+            cal_cut = filter_arraydict(mk, ~outliers)
+            print(len(cal_cut['norm_pos']))
+            pupil_cut = filter_arraydict(pup, ~outliers)
+            print("Refitting...")
+            if recursive_outlier_cut:
+                mx_std = max_stds_for_outliers
+            else:
+                mx_std = None
+            return _fit_tps_gaze_cv(cal_cut, pupil_cut, 
+                             lambd_list=lambd_list, 
+                             min_calibration_threshold=min_calibration_threshold, 
+                             max_stds_for_outliers=mx_std)
+    else:
+        outliers = np.zeros_like(pup['timestamp']) > 1
+    # Select lambda based on accumulated error / whatever metric
+    best_lambda_i = np.argmin(errors.mean(1))
+    # re-fit with that lambda
+    theta_x = tps.TPS.fit(data_x, lambd=lambd_list[best_lambda_i])
+    theta_y = tps.TPS.fit(data_y, lambd=lambd_list[best_lambda_i])
+    # return parameters0
+    return (data_x, theta_x, data_y, theta_y), outliers # , errors, all_preds
+
 
 
 def get_point_grid(n_points=60,
@@ -224,8 +469,9 @@ class Calibration(object):
                  pupil_arrays,
                  calibration_arrays,
                  video_dims,
+                 cluster_reduce_fn=np.median,
                  min_calibration_confidence=0.6,
-                 calibration_type='monocular_pl',
+                 calibration_type='monocular_tps_cv',
                  mapping_computed=False,
                  **params,
                  ):
@@ -253,6 +499,7 @@ class Calibration(object):
         self.min_calibration_confidence = min_calibration_confidence
         self.calibration_arrays = calibration_arrays
         self.pupil_arrays = pupil_arrays
+        self.cluster_reduce_fn = cluster_reduce_fn
         self.video_dims = video_dims
         self.params = params
         self.mapping_computed = mapping_computed
@@ -265,7 +512,7 @@ class Calibration(object):
                 self.min_calibration_confidence = cal_params.pop(
                     'min_calibration_confidence')
             self.params = cal_params
-
+        # Binocular or monocular calibration
         if isinstance(pupil_arrays, (list, tuple)) and len(pupil_arrays) == 2:
             left_pupil, right_pupil = self.pupil_arrays
             if self.mapping_computed:
@@ -281,7 +528,7 @@ class Calibration(object):
             self.pupil_list.extend(arraydict_to_dictlist(right_pupil))
             # Sort both left and right pupils by time. `id` field in each dict
             # will (SHOULD!) still indicate which eye is which. 
-            self.pupil_list = sorted(self.pupil_list, key=lambda x: x['timepoint'])
+            self.pupil_list = sorted(self.pupil_list, key=lambda x: x['timestamp'])
         else:
             if not self.mapping_computed:
                 self.pupil_arrays = match_time_points(
@@ -295,13 +542,58 @@ class Calibration(object):
 
     def _get_map_params(self):
         # Run calibration
+        if self.params is None:
+            kws = {}
+        else:
+            kws = self.params
+        if self.cluster_reduce_fn is None:
+            marker_input = self.calibration_arrays
+            pupil_input = self.pupil_arrays
+        else:
+            # Since we are reducing data points fed to calibration
+            # down to 1, perform data selection based on pupil
+            # confidence first:
+            fn = get_function(self.cluster_reduce_fn)
+            keep = self.pupil_arrays['confidence'] > self.min_calibration_confidence
+            marker_input_ = filter_arraydict(self.calibration_arrays, keep)
+            marker_input = marker_cluster_stat(marker_input_,
+                                                fn=fn,
+                                                field='norm_pos',
+                                                return_all_fields=True,
+                                                clusters=None
+                                                )
+
+            pupil_input_ = filter_arraydict(self.pupil_arrays, keep)
+            pupil_input = {}
+            pupil_input['timestamp'] = marker_input['timestamp']
+            pupil_input['norm_pos'] = marker_cluster_stat(pupil_input_,
+                                                            field='norm_pos',
+                                                            fn=fn,
+                                                            clusters=marker_input_[
+                                                                'marker_cluster_index'],
+                                                            return_all_fields=False,
+                                                            )
+            pupil_input['confidence'] = marker_cluster_stat(pupil_input_,
+                                                            field='confidence',
+                                                            fn=fn,
+                                                            clusters=marker_input_[
+                                                                'marker_cluster_index'],
+                                                            return_all_fields=False,
+                                                            )
         if self.calibration_type == 'monocular_pl':
             # NOTE: zero index for matched_data here is because this is monocular,
             # and matched data only returns a 1-long tuple.
-            is_binocular, matched_data = parse_plab_data(self.pupil_list, self.calibration_list, mode='2d',
-                                                               min_calibration_confidence=self.min_calibration_confidence)
+            if 'max_stds_for_outliers' in kws:
+                _, outliers = _fit_tps_gaze_cv(marker_input, pupil_input,
+                                            min_calibration_threshold=self.min_calibration_confidence, 
+                                            **kws)
+                marker_input = filter_arraydict(marker_input, ~outliers)
+            marker_list_input = arraydict_to_dictlist(marker_input)
+            is_binocular, matched_data = parse_plab_data(self.pupil_list,       
+                                            marker_list_input, mode='2d',
+                                            min_calibration_confidence=self.min_calibration_confidence)
             method, result = calibrate_2d_monocular(
-                matched_data[0], frame_size=self.video_dims)
+                matched_data[0], frame_size=self.video_dims, **kws)
             self.map_params = result["args"]["params"]
             #cx, cy, n = self.map_params
         elif self.calibration_type == 'binocular_pl':
@@ -310,14 +602,15 @@ class Calibration(object):
             method, result = calibrate_2d_binocular(
                 *matched_data, frame_size=self.video_dims)
             self.map_params = result['args']
-        elif self.calibration_type == 'monocular_tps':
-            if self.params is None:
-                kws = {}
-            else:
-                kws = self.params
-            self.map_params = _fit_tps_gaze(self.calibration_arrays, self.pupil_arrays,
-                                            min_calibration_threshold=self.min_calibration_confidence, **kws)
-
+        elif self.calibration_type in ('monocular_tps', 'monocular_tps_cv'):
+            if self.calibration_type == 'monocular_tps':
+                self.map_params = _fit_tps_gaze(marker_input, pupil_input,
+                                            min_calibration_threshold=self.min_calibration_confidence, 
+                                            **kws)
+            elif self.calibration_type == 'monocular_tps_cv':
+                self.map_params, outliers = _fit_tps_gaze_cv(marker_input, pupil_input,
+                                            min_calibration_threshold=self.min_calibration_confidence, 
+                                            **kws)
     def _get_mapper(self):
         if self.calibration_type == 'monocular_pl':
             self._mapper = calibrate_2d.make_map_function(
@@ -327,7 +620,7 @@ class Calibration(object):
                 self.map_params["params"],
                 self.map_params["params_eye0"],
                 self.map_params["params_eye1"])
-        elif self.calibration_type == 'monocular_tps':
+        elif self.calibration_type in ('monocular_tps', 'monocular_tps_cv'):
             data_x, mapper_x, data_y, mapper_y = self.map_params
             # For thin plate splines, both the X and Y pupil coordinates are used to generate
             # the X component of the gaze coordinates, and then both X and Y pupil coordinates
@@ -343,9 +636,11 @@ class Calibration(object):
         # Map gaze to video coordinates
         if self.calibration_type == 'binocular_pl':
             # Create a list of dicts, sorted by timestamps
-            if not isinstance(pupil_arrays, list):
-                raise ValueError('For binocular calibrations, `pupil_arrays` input must be a list of two dictionaries\n of arrays for left and right eyes.')
+            #if not isinstance(pupil_arrays, list):
+            #    raise ValueError('For binocular calibrations, `pupil_arrays` input must be a list of two dictionaries\n of arrays for left and right eyes.')
+            # Left
             pupil_list = arraydict_to_dictlist(pupil_arrays[0])
+            # Right
             pupil_list.extend(arraydict_to_dictlist(pupil_arrays[1]))
             pupil_list = sorted(pupil_list, key=lambda x: x['timestamp'])
             # Map w/ pupil's binocular mapper
@@ -363,7 +658,7 @@ class Calibration(object):
                               norm_pos=gaze)
             if 'confidence' in pupil_arrays:
                 gaze_array['confidence']=pupil_arrays['confidence']
-        elif self.calibration_type == 'monocular_tps':
+        elif self.calibration_type in ('monocular_tps', 'monocular_tps_cv'):
             gaze = self._mapper(pupil_arrays)
             gaze_array = dict(timestamp=pupil_arrays['timestamp'],
                               norm_pos=gaze)
@@ -431,7 +726,7 @@ class Calibration(object):
                          point_size=3,
                          show_data=False,
                          data_scale=20,
-                         sc=0.1,
+                         sc=0.0,
                          color=((1.0, 0.9, 0),),
                          ax_world='new',
                          ax_eye=None,
@@ -458,14 +753,26 @@ class Calibration(object):
                 ax_left, ax_right = ax_eye
                 # recursive call to plot l, r eye grids on l, r axes
         if self.calibration_type == 'binocular_pl':
+            # Start with grid of locations for left
             grid_pts_array_l = self._get_grid_points(
-                'left', n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='arraydict')
+                'left', 
+                n_points=n_points, 
+                sc=sc, 
+                n_horizontal_lines=n_horizontal_lines, 
+                return_type='arraydict')
+            # Fill in `_id`` and `confidence` fields
             grid_pts_array_l['id'] = np.ones_like(
                 grid_pts_array_l['timestamp'], dtype=np.int64)
             grid_pts_array_l['confidence'] = np.ones_like(
                 grid_pts_array_l['timestamp'], dtype=np.float32)
+            # Continue with grid of locations for right
             grid_pts_array_r = self._get_grid_points(
-                'right', n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='arraydict')
+                'right', 
+                n_points=n_points, 
+                sc=sc, 
+                n_horizontal_lines=n_horizontal_lines, 
+                return_type='arraydict')
+            # Fill in `_id`` and `confidence` fields
             grid_pts_array_r['id'] = np.zeros_like(
                 grid_pts_array_r['timestamp'], dtype=np.int64)
             grid_pts_array_r['confidence'] = np.ones_like(
@@ -473,17 +780,18 @@ class Calibration(object):
             if (grid_pts_array_l is None) or (grid_pts_array_r is None):
                 grid_array = None
             else:
-                gaze_binocular = self.map(stack_arraydicts(
-                    grid_pts_array_l, grid_pts_array_r), return_type='dictlist')
+                gaze_binocular = self.map([grid_pts_array_l, grid_pts_array_r], 
+                                          return_type='dictlist')
+                gaze = {}
                 # Separate left and right eyes
                 gaze['left'] = [
                     g for g in gaze_binocular if g['base_data'][0]['id'] == 0]
-                gaze['left'] = gaze_utils.dictlist_to_arraydict(gaze_left)
+                gaze['left'] = dictlist_to_arraydict(gaze['left'])
                 gaze['right'] = [
                     g for g in gaze_binocular if g['base_data'][0]['id'] == 1]
-                gaze['right'] = gaze_utils.dictlist_to_arraydict(gaze_right)
+                gaze['right'] = dictlist_to_arraydict(gaze['right'])
                 grid_array = gaze[eye]['norm_pos']
-        elif self.calibration_type in ('monocular_pl', 'monocular_tps'):
+        elif self.calibration_type in ('monocular_pl', 'monocular_tps', 'monocular_tps_cv'):
             grid_pts_list = self._get_grid_points(
                 eye, n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='arraydict')
             if grid_pts_list is None:
@@ -521,7 +829,7 @@ class Calibration(object):
 
             #ax_eye.axis([0, 1, 1, 0])
 
-    def _get_grid_points(self, eye=None, sc=0.1, n_horizontal_lines=10, n_vertical_lines=None, n_points=40, return_type='dictlist', min_possible_eye_points=10):
+    def _get_grid_points(self, eye=None, sc=0.0, n_horizontal_lines=10, n_vertical_lines=None, n_points=40, return_type='dictlist', min_possible_eye_points=10):
         """Get grid points for displaying calibration
         
         Parameters
@@ -529,6 +837,8 @@ class Calibration(object):
         eye : TYPE
             Description
         """
+        # ASSUMPTION:
+        eye_camera_fps = 120
         if 'binocular' not in self.calibration_type: 
             pupils = self.pupil_arrays
         else:
@@ -557,11 +867,11 @@ class Calibration(object):
             n_points=n_points,
         )
         pts = np.array(pts).T
-        grid_pts = dict(norm_pos=pts, timestamp=np.arange(len(pts))/120.)
-        grid_pts_list = arraydict_to_dictlist(grid_pts)
+        grid_pts = dict(norm_pos=pts, timestamp=np.arange(len(pts))/eye_camera_fps)
         if return_type == 'array':
             return pts
         elif return_type == 'arraydict':
             return grid_pts
         elif return_type == 'dictlist':
+            grid_pts_list = arraydict_to_dictlist(grid_pts)
             return grid_pts_list
