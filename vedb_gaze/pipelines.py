@@ -1163,8 +1163,6 @@ def make_pipeline(session,
             )
             error_out.append(
                 (error_name, getattr(gaze_pipeline, error_name).lzout.error))
-    else:
-        print("DAFAK SOMEHOW TAG IS NONE.")
     gaze_pipeline.set_output(pupil_out + calibration_marker_out + cal_filter_out + \
         validation_marker_out + val_filter_out + calibration_out + gaze_out + error_out)
 

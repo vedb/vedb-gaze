@@ -369,9 +369,19 @@ def load_pipeline_elements(session,
 
     if val_marker_param_tag is not None:
         try:
-            print("> Searching for validation markers...")
-            outputs['validation_marker_all'] = _check_dict_list(
-                session_docs, n=1, tag=val_marker_param_tag, epoch='all')
+            if isinstance(val_marker_param_tag, tuple):
+                for t in val_marker_param_tag:
+                    print("> Searching for validation markers...")
+                    tmp = _check_dict_list(
+                        session_docs, n=1, tag=t, epoch='all')
+                    outputs['validation_marker_all'] = tmp
+                    if not tmp.failed:
+                        break
+            else:
+                print("> Searching for validation markers...")
+                outputs['validation_marker_all'] = _check_dict_list(
+                    session_docs, n=1, tag=val_marker_param_tag, epoch='all')
+
             print(">> FOUND it")
         except:
             print('>> NOT found')
@@ -442,9 +452,11 @@ def load_pipeline_elements(session,
                             error_param_tag]
                 # Skip any steps not provided? Likely to cause bugs below
                 err_tag = '-'.join(err_tags)
-                err = _check_dict_list(session_docs, n=None,
+                tmp = _check_dict_list(session_docs, n=None,
                                         tag=err_tag, eye=eye)
-                err = sorted(err, key=lambda x: x.epoch)
+                if len(tmp) == 0:
+                    1/0  # error out, nothing found                                        
+                err = sorted(tmp, key=lambda x: x.epoch)
                 outputs['error'][eye] = err
                 print(">> FOUND it")
             except:
