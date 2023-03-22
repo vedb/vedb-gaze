@@ -26,6 +26,26 @@ b = y
 RdBu_2D = np.dstack([r, np.zeros_like(r), b])[::-1]
 BuOr_2D = np.dstack([r, g, b])[::-1]
 
+def get_frame_indices(start_time, end_time, all_time):
+	"""Finds start and end indices for frames that are between `start_time` and `end_time`
+	
+	Note that `end_frame` returned will be the first frame that occurs after
+	end_time, such that some data[start_frame:end_frame] will span the range 
+	between `start_time` and `end_time`. 
+	Parameters
+	----------
+	start_time: scalar
+		time after which to select frames
+	end_time: scalar
+		time before which to select frames
+	all_time: array-like
+		full array of timestamps for data into which to index.
+	"""
+	ti = (all_time > start_time) & (all_time < end_time)
+	time_clipped = all_time[ti]
+	indices, = np.nonzero(ti)
+	start_frame, end_frame = indices[0], indices[-1] + 1
+	return start_frame, end_frame 
 
 def gaze_hist(gaze, 
     confidence_threshold=0, 
@@ -226,11 +246,11 @@ def plot_eye_at_marker(session, marker, pupils,
         cluster_times_all.append([tt_all[0], tt_all[-1]])
 
     eye_time = session.get_video_time('eye_%s' % eye)
-    eye_frames = [vedb_store.utils.get_frame_indices(
+    eye_frames = [get_frame_indices(
         ct, ct+1, eye_time)[0] for ct in cluster_times]
-    eye_frames_st = [vedb_store.utils.get_frame_indices(
+    eye_frames_st = [get_frame_indices(
         ct[0], ct[0]+1, eye_time)[0] for ct in cluster_times_all]
-    eye_frames_fin = [vedb_store.utils.get_frame_indices(
+    eye_frames_fin = [get_frame_indices(
         ct[1], ct[1]+1, eye_time)[0] for ct in cluster_times_all]
     pupil_conf = _use_data(pupils)['confidence']
     #print(pupil_conf.shape)
@@ -1492,8 +1512,6 @@ def render_gaze_video(session,
     
     """
     # Remove this dependency
-    import vedb_store
-    import file_io
     import pathlib
     import cv2
     if progress_bar is None:
@@ -1510,16 +1528,16 @@ def render_gaze_video(session,
     error_vmin = 0
     error_vmax = 10
     # Manage time
-    start_frame, end_frame = vedb_store.utils.get_frame_indices(
+    start_frame, end_frame = get_frame_indices(
         start_time, end_time, session.world_time)
     # Account for possibility that whole eye video was not analyzed to find pupils
-    start_frame_eye_left_vid, _ = vedb_store.utils.get_frame_indices(
+    start_frame_eye_left_vid, _ = get_frame_indices(
         start_time, end_time, session.get_video_time('eye_left') - session.start_time)
-    start_frame_eye_left, _ = vedb_store.utils.get_frame_indices(
+    start_frame_eye_left, _ = get_frame_indices(
         start_time, end_time, _get_timestamp(pipeline['pupil']['left'], session))
-    start_frame_eye_right_vid, _ = vedb_store.utils.get_frame_indices(
+    start_frame_eye_right_vid, _ = get_frame_indices(
         start_time, end_time, session.get_video_time('eye_right') - session.start_time)
-    start_frame_eye_right, _ = vedb_store.utils.get_frame_indices(
+    start_frame_eye_right, _ = get_frame_indices(
         start_time, end_time, _get_timestamp(pipeline['pupil']['right'], session))
     # Manage where to save
     if tmp_dir is None:
