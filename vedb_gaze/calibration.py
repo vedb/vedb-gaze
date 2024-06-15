@@ -762,9 +762,9 @@ class Calibration(object):
                 return_type='arraydict')
             # Fill in `_id`` and `confidence` fields
             grid_pts_array_l['id'] = np.ones_like(
-                grid_pts_array_l['timestamp'], dtype=np.int64)
+                grid_pts_array_l['timestamp'], dtype=int64)
             grid_pts_array_l['confidence'] = np.ones_like(
-                grid_pts_array_l['timestamp'], dtype=np.float32)
+                grid_pts_array_l['timestamp'], dtype=float32)
             # Continue with grid of locations for right
             grid_pts_array_r = self._get_grid_points(
                 'right', 
@@ -774,9 +774,9 @@ class Calibration(object):
                 return_type='arraydict')
             # Fill in `_id`` and `confidence` fields
             grid_pts_array_r['id'] = np.zeros_like(
-                grid_pts_array_r['timestamp'], dtype=np.int64)
+                grid_pts_array_r['timestamp'], dtype=int64)
             grid_pts_array_r['confidence'] = np.ones_like(
-                grid_pts_array_r['timestamp'], dtype=np.float32)
+                grid_pts_array_r['timestamp'], dtype=float32)
             if (grid_pts_array_l is None) or (grid_pts_array_r is None):
                 grid_array = None
             else:
@@ -858,7 +858,7 @@ class Calibration(object):
         aspect_ratio = width / height
         pts = get_point_grid(
             n_horizontal_lines=n_horizontal_lines,
-            n_vertical_lines=np.int(
+            n_vertical_lines=int(
                 n_horizontal_lines * aspect_ratio) if n_vertical_lines is None else n_vertical_lines,
             st_horizontal=hmin,
             fin_horizontal=hmax,

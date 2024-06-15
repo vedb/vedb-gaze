@@ -359,14 +359,16 @@ def make_dot_overlay_animation(
     # print(dot_markers)
     # First set up the figure, the axis, and the plot element we want to animate
     fig, ax = plt.subplots(figsize=figsize)
-    im = ax.imshow(video_data[0], extent=extent, cmap="gray", aspect="auto")
+    im = ax.imshow(video_data[0], extent=extent, cmap="gray", aspect="auto", vmin=0, vmax=255)
     ax.set_xticks([])
     ax.set_yticks([])
     dots = []
     for this_dot, dc, dw, dm, dl in zip(dots_matched, dot_colors, dot_widths, dot_markers, dot_labels):
-        tmp = plt.scatter(*this_dot['norm_pos'].T,
+        tmp = ax.scatter(*this_dot['norm_pos'].T,
                           s=dw, c=dc, marker=dm, label=dl)
         dots.append(tmp)
+    ax.set_xlim([0, 1])
+    ax.set_ylim([1, 0])
     artists = (im,) + tuple(dots)
     plt.close(fig.number)
     # initialization function: plot the background of each frame
@@ -1777,7 +1779,7 @@ def render_gaze_video(session,
     eye_left_vid.VideoObj.release()
     eye_right_vid.VideoObj.release()
     files = sorted(sdir.glob('*png'))
-    fps = np.int(
+    fps = int(
         np.round(1/np.mean(np.diff(world_time[start_frame:end_frame]))))
     print(fps)
     file_io.write_movie_from_frames(files, sname, fps=fps,

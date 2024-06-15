@@ -90,7 +90,7 @@ def find_concentric_circles(video_file,
     # termination criteria: Make inputs?
     #criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
     use_multiprocessing = n_cores is not None
-    n_frames_total, vdim, hdim, _ = file_io.var_size(video_file)
+    n_frames_total, vdim, hdim, _ = file_io. list_array_shapes(video_file)
     if start_frame is None:
         start_frame = 0
     if end_frame is None:
@@ -172,10 +172,63 @@ def _find_checkerboard_frame(args):
     use of multiprocessing module in conjunction with tqdm for progress bars. 
     """
     # Find the chess board corners
-    video_data, timestamp, scale, (vdim, hdim), computed_refinement_window_size, checkerboard_size, detection_flags = args
+    video_data, timestamp, scale, (vdim, hdim), refinement_window_size, checkerboard_size, detection_flags = args
+    return find_checkerboard_frame(video_data, timestamp, 
+                            scale=scale,
+                            vdim=vdim,
+                            hdim=hdim,
+                            refinement_window_size=refinement_window_size,
+                            checkerboard_size=checkerboard_size,
+                            detection_flags=detection_flags)
+
+
+def find_checkerboard_frame(frame, 
+                            timestamp=0.0,
+                            scale=0.5,
+                            vdim=1536,
+                            hdim=2048,
+                            refinement_window_size=(11,11),
+                            checkerboard_size=(3, 6),
+                            detection_flags=11):
+    """Find checkerboard marker in one image array.
+
+    Image array should be grayscale, scaled 0-255 (??)
+
+    Parameters
+    ----------
+    frame : array
+        2D image array, grayscale
+    timestamp : float, optional
+        time point for frame, just returned in output, by default 0.0
+    scale : scalar, optional
+        scale factor for image (i.e. by what factor this image was resized 
+        from original video), by default 0.5. This scale factor is necessary,
+        along with vdim and hdim, if the input to this function is less
+        than original size, in order to translate checkerboard location back
+        to pixel coordinates in the original image.
+    vdim : scalar int, optional
+        vertical size of image, by default 1536 (VEDB project standard res).
+        See note in `scale` kwarg for why this is necessary.
+    hdim : int, optional
+        horizontal size of image, by default 2048 (VEDB project standard res).
+        See note in `scale` kwarg for why this is necessary.
+    refinement_window_size : _type_, optional
+        _description_, by default computed_refinement_window_size
+    checkerboard_size : _type_, optional
+        _description_, by default checkerboard_size
+    detection_flags : _type_, optional
+        _description_, by default detection_flags
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     found_checkerboard, corners1 = cv2.findChessboardCorners(
-        video_data, checkerboard_size, detection_flags)
+        frame, checkerboard_size, detection_flags)
     # If found, add object points, image points (after refining them)
+    computed_refinement_window_size = tuple(
+        [int(np.ceil(x * scale)) for x in refinement_window_size])
     if found_checkerboard:
         # Fixed opencv parameters - revisit?
         n_iterations = 30
@@ -184,7 +237,7 @@ def _find_checkerboard_frame(args):
             cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, n_iterations, threshold)
         zero_zone = (-1, -1)
         corners2 = cv2.cornerSubPix(
-            video_data, corners1, computed_refinement_window_size, zero_zone, sub_pixel_corner_criteria)
+            frame, corners1, computed_refinement_window_size, zero_zone, sub_pixel_corner_criteria)
         # Parse outputs (convert back to full-size pixels, and convert
         # to 0-1 image coordinates for full checkerboard and centroid)
         corners = np.squeeze(corners2) / scale
@@ -215,7 +268,8 @@ def find_checkerboard(
     start_frame=None,
     end_frame=None,
     batch_size=None,
-    progress_bar=None
+    progress_bar=None,
+	invert_contrast=False,
     ):
     """Use opencv to detect a checkerboard pattern
 
@@ -244,6 +298,9 @@ def find_checkerboard(
         that is ~4 GB in size
     progress_bar : tqdm.tqdm progress bar, optional
         progress bar to use for display through video, by default None
+	invert_contrast : bool, optional
+		whether to invert contrast of image (useful for some checkerboards on black backgrounds;
+		opencv expects white background)
 
     Returns
     -------
@@ -254,7 +311,7 @@ def find_checkerboard(
         def progress_bar(x, total=0): return x
 
     timestamps = np.load(timestamp_file)
-    n_frames_total, vdim, hdim, _ = file_io.var_size(video_file)
+    n_frames_total, vdim, hdim, _ = file_io. list_array_shapes(video_file)
     if start_frame is None:
         start_frame = 0
     if end_frame is None:
@@ -266,7 +323,6 @@ def find_checkerboard(
         batch_size = int(np.floor(max_batch_bytes / n_bytes))
     # More computed args & useful variables
     use_multiprocessing = n_cores is not None
-    computed_refinement_window_size = tuple([int(np.ceil(x * scale)) for x in refinement_window_size])
     n_frames = end_frame - start_frame
     n_batches = int(np.ceil(n_frames / batch_size))
     output_dicts = []
@@ -280,6 +336,8 @@ def find_checkerboard(
             frames=(batch_start, batch_end),
             size=scale,
             color='gray')
+        if invert_contrast:
+            video_data = 255-video_data
         n_frames = batch_end - batch_start
         assert video_data.shape[0] == n_frames, 'Frame number error'
         assert len(timestamps[batch_start:batch_end]) == n_frames, 'Timestamp / frame number mismatch'
@@ -290,7 +348,7 @@ def find_checkerboard(
                  timestamps[batch_start:batch_end],
                  repeat(scale),
                  repeat((vdim, hdim)),
-                 repeat(computed_refinement_window_size),
+                 repeat(refinement_window_size),
                  repeat(checkerboard_size),
                  repeat(detection_flags))
         if use_multiprocessing:

@@ -147,7 +147,7 @@ def compute_error(marker,
     if vertical_horizontal_smooth_error_resolution is None:
         vertical_horizontal_smooth_error_resolution = 0.25
     if not isinstance(vertical_horizontal_smooth_error_resolution, (list, tuple)):
-        hres, vres = (np.array(image_resolution) * vertical_horizontal_smooth_error_resolution).astype(np.int)
+        hres, vres = (np.array(image_resolution) * vertical_horizontal_smooth_error_resolution).astype(int)
     else:
         vres, hres = vertical_horizontal_smooth_error_resolution
     # Interpolate to get error over whole image

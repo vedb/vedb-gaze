@@ -85,7 +85,7 @@ def plabs_detect_pupil(
         properties = {}
     det = pupil_detectors.Detector2D(properties=properties)
 
-    n_frames_total, vdim, hdim, _ = file_io.var_size(video_file)
+    n_frames_total, vdim, hdim, _ = file_io. list_array_shapes(video_file)
     eye_dims = np.array([hdim, vdim])
     if start_frame is None:
         start_frame = 0

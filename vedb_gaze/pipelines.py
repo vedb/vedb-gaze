@@ -132,7 +132,7 @@ def pupil_detection(session_folder,
     if 'progress_bar' in default_kw:
         kwargs['progress_bar'] = progress_bar
     # Call function
-    data = func(eye_video_file, eye_time_file, **kwargs,)
+    data = func(eye_video_file, timestamp_file=eye_time_file, **kwargs,)
     #move_intermediate_files = 'intermediate_files' in data
     # Manage ouptut file
     session_date = os.path.split(session_folder)[-1]
@@ -534,7 +534,7 @@ def compute_calibration(marker_fname,
         param_fname = f'{fn_name}-{param_tag}.yaml'
         param_fpath = os.path.join(PARAM_DIR, param_fname)
         kwargs = utils.read_yaml(param_fpath)
-        vdims = file_io.var_size(os.path.join(
+        vdims = file_io. list_array_shapes(os.path.join(
             session_folder, 'world.mp4'))[2:0:-1]
     if len(pupil_data) == 1:
         # only one eye
@@ -653,7 +653,7 @@ def map_gaze(session_folder,
         param_fname = f'gaze_mapper-{param_tag}.yaml'
         param_fpath = os.path.join(PARAM_DIR, param_fname)
         kwargs = utils.read_yaml(param_fpath)
-        #vdims = file_io.var_size(os.path.join(
+        #vdims = file_io. list_array_shapes(os.path.join(
         #    session_folder, 'world.mp4'))[2:0:-1]
     
     if len(pupil_data) == 1:
@@ -760,7 +760,7 @@ def compute_error(session_folder,
         param_fname = f'compute_error-{param_tag}.yaml'
         param_fpath = os.path.join(PARAM_DIR, param_fname)
         kwargs = utils.read_yaml(param_fpath)
-        #vdims = file_io.var_size(os.path.join(
+        #vdims = file_io. list_array_shapes(os.path.join(
         #    session_folder, 'world.mp4'))[2:0:-1]
 
     func = utils.get_function(fn)

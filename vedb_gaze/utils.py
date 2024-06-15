@@ -2,6 +2,8 @@
 
 import numpy as np
 import pandas as pd
+import scipy.interpolate
+from scipy.stats import zscore
 import yaml
 import copy
 import os
@@ -152,7 +154,7 @@ def onoff_from_binary(data, return_duration=True):
         start_value = 1
     else:
         start_value = 0
-    data = data.astype(np.float).copy()
+    data = data.astype(float).copy()
 
     ddata = np.hstack([[start_value], np.diff(data)])
     (onsets,) = np.nonzero(ddata > 0)
@@ -181,7 +183,7 @@ def onoff_from_binary(data, return_duration=True):
             duration[0] = offsets[0] - 0
         onoff = np.vstack([onoff, duration])
 
-    onoff = onoff.T.astype(np.int)
+    onoff = onoff.T.astype(int)
     return onoff
 
 
@@ -206,17 +208,29 @@ def onoff_to_binary(onoff, length):
     return index > 0
 
 
-def time_to_index(onsets_offsets, timeline):
+def time_to_index(onsets_offsets, timeline, index_type='integer'):
     """find indices between onsets & offsets in timeline
 
     Parameters
     ----------
+    onset_offsets : array-like
+        array of onsets and offsets in TIME
+    timeline : array-like
+        1d array of timestamps; this is the timeline into which to translate the time indices
+    index_type : str
+        'integer' or 'boolean'; 
+        'integer' returns integer indices for onsets and offsets in the specified timeline
+        'binary' returns boolean indices to select segments of the 
     """
-    out = np.zeros_like(onsets_offsets)
+    if not isinstance(onsets_offsets, np.ndarray):
+        onsets_offsets = np.asarray(onsets_offsets)
+    out = np.zeros(onsets_offsets.shape, dtype=int)
     for ct, (on, off) in enumerate(onsets_offsets):
         i = np.flatnonzero(timeline > on)[0]
         j = np.flatnonzero(timeline < off)[-1]
-        out[ct] = [i, j]
+        out[ct] = [int(i), int(j)]
+    if index_type=='boolean':
+        out = onoff_to_binary(out, len(timeline))
     return out
 
 
@@ -483,3 +497,91 @@ def load_pipeline_elements(session,
     dbi.is_verbose = verbosity
 
     return outputs
+
+def remove_outliers(timestamps, data, 
+                    z_threshold=4,
+                    absolute_min=None,
+                    absolute_max=None
+                    ):
+    """remove outliers from dataset
+
+    Parameters
+    ----------
+    timestamps : array-like
+        timestamps associated with each data point (timestamps associated
+        with outlying data points are also removed)
+    data : array-like
+        data in which to search for outliers
+    z_threshold : scalar, optional
+        threshold for z score for outliers, by default 4
+    absolute_min : scalar, optional
+        absolute minimum threshold below which points will be considered
+        outliers; None for skip this, by default None
+    absolute_max : scalar, optional
+        absolute maximum threshold above which points will be considered
+        outliers; None for skip this, by default None
+    """
+    keep = np.ones_like(data) > 0
+    # First, remove absolute threshold out-of-bounds
+    if absolute_min is not None:
+        keep &= (data >= absolute_min)
+    if absolute_max is not None:
+        keep &= (data <= absolute_max)
+    if z_threshold is not None:
+        data_z = zscore(data)
+        keep &= (np.abs(data_z) < z_threshold)
+    # Alternatively, set to nans, or return outlier index?
+    return timestamps[keep], data[keep]
+
+
+def resample_data(timestamps, data, 
+                      fps=120,
+                      method='linear_interpolation',
+                      remove_nans=True,
+                      **kwargs):
+    """
+    Removes outliers (< max eye image size, std > std_threshold)
+    Parameters
+    ==========
+    outlier_thresh : scalar
+        threshold for outliers, in stds
+    """
+    new_time = np.arange(timestamps[0], timestamps[-1], 1/fps)
+    # Make 2d for some interpolators
+    make_2d = method not in ('linear_interpolation',)
+    if make_2d:
+        if np.ndim(data) < 2:
+            inpt = data.reshape(-1, 1)
+        else:
+            inpt = data
+        t = timestamps.reshape(-1, 1)
+        new_time = new_time.reshape(-1, 1)
+    else:
+        inpt = data
+        t = timestamps
+
+    if remove_nans:
+        # Remove nans
+        if np.ndim(inpt) > 1:
+            keep = ~np.any(np.isnan(inpt), axis=1)
+        else:
+            keep = ~np.isnan(inpt)
+        t = t[keep]
+        inpt = inpt[keep]
+
+    if method == 'linear_interpolation':
+        interp = scipy.interpolate.interp1d(t, inpt, axis=0)
+    elif method == 'thin-plate_spline':
+        if not 'neighbors' in kwargs:
+            print("Hint: this runs much faster with neighbors=7 or some low number")
+        interp = scipy.interpolate.RBFInterpolator(t, inpt, **kwargs)
+    else:
+        raise NotImplementedError(f"Method {method} not available!")
+    data_out = interp(new_time)
+    return new_time, data_out
+
+def filter_data(timestamps, data, 
+                low_cutoff=None,
+                high_cutoff=None,
+                ):
+    pass
