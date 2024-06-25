@@ -25,15 +25,15 @@ from .utils import (
 from .visualization import colormap_2d
 from .marker_parsing import marker_cluster_stat
 
-from pupil_recording_interface.externals.data_processing import (
+from .externals.data_processing import (
     _filter_pupil_list_by_confidence,
     _extract_2d_data_monocular,
     _extract_2d_data_binocular,
     _match_data,
 )
-from pupil_recording_interface.externals import calibrate_2d
+from .externals import calibrate_2d
 
-from pupil_recording_interface.externals.gaze_mappers import Binocular_Gaze_Mapper
+from .externals.gaze_mappers import Binocular_Gaze_Mapper
 
 import logging
 logger = logging.getLogger(__name__)
@@ -847,10 +847,10 @@ class Calibration(object):
         if ci.sum() < min_possible_eye_points:
             return None
         x, y = pupils['norm_pos'][ci].T
-        vmin, vmax = np.min(y), np.max(y)
-        hmin, hmax = np.min(x), np.max(x)
-        height = np.ptp(y)
-        width = np.ptp(x)
+        vmin, vmax = np.nanmin(y), np.nanmax(y)
+        hmin, hmax = np.nanmin(x), np.nanmax(x)
+        height = np.ptp(y[~np.isnan(y)])
+        width = np.ptp(x[~np.isnan(x)])
         vmin += height * sc
         vmax -= height * sc
         hmin += width * sc

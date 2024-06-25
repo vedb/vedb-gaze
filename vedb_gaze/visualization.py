@@ -32,7 +32,12 @@ def gaze_hist(gaze,
     cmap='gray_r',
     hist_bins_x=81, 
     hist_bins_y=61, 
-    field='norm_pos', 
+    field='norm_pos',
+    vmin_x=0,
+    vmax_x=1,
+    vmin_y=0,
+    vmax_y=1, 
+    cmax_pct=97.5, 
     ax=None):
     """Make a 2D histogram of gaze positions
 
@@ -69,12 +74,12 @@ def gaze_hist(gaze,
     ci = gaze['confidence'] > confidence_threshold
     x, y = gaze[field][ci].T
     im_kw_hist = dict(
-        extent=[0, 1, 1, 0],
+        extent=[vmin_x, vmax_x, vmax_y, vmin_y],
         aspect='auto',
         cmap=cmap)
     hst = np.histogram2d(y, x, bins=[np.linspace(
-        0, 1, hist_bins_y), np.linspace(0, 1, hist_bins_x)], density=True)
-    vmax_hst = np.percentile(hst[0], 97.5)
+        vmin_y, vmax_y, hist_bins_y), np.linspace(vmin_x, vmax_x, hist_bins_x)], density=True)
+    vmax_hst = np.percentile(hst[0], cmax_pct)
     hst_im = ax.imshow(hst[0], vmax=vmax_hst, **im_kw_hist)
     return hst_im
 

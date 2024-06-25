@@ -2,9 +2,7 @@
 import numpy as np
 import tqdm
 import tqdm.notebook
-import vedb_store
 import file_io
-import pydra
 import typing
 import copy
 import os
@@ -12,6 +10,10 @@ import os
 from . import utils
 from .options import config
 from .calibration import Calibration
+
+# Heavy dependencies, allow import to fail
+import vedb_store
+import pydra
 
 
 BASE_DIR = config.get('paths', 'base_dir')
