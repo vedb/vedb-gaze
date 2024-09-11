@@ -161,10 +161,15 @@ def onoff_from_binary(data, return_duration=True):
     # print(onsets)
     (offsets,) = np.nonzero(ddata < 0)
     # print(offsets)
+    if (len(offsets) == 0) & (len(onsets) == 1):
+        offsets = [len(data)]
+        on_at_end = True
+    else:
+        on_at_end = False
     onset_first = onsets[0] < offsets[0]
     len(onsets) == len(offsets)
 
-    on_at_end = False
+    #on_at_end = False
     on_at_start = False
     if onset_first:
         if len(onsets) > len(offsets):
