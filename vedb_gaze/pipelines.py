@@ -11,11 +11,6 @@ from . import utils
 from .options import config
 from .calibration import Calibration
 
-# Heavy dependencies, allow import to fail
-import vedb_store
-import pydra
-
-
 BASE_DIR = config.get('paths', 'base_dir')
 PYDRA_OUTPUT_DIR = config.get('paths', 'pydra_cache') # '/pomcloud0/vedb/pydra_cache/'
 BASE_OUTPUT_DIR = config.get('paths', 'output_dir') # '/pomcloud0/vedb/processed/'
