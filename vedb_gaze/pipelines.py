@@ -401,7 +401,6 @@ def compute_error(gaze_file,
         # Load parameters from stored yaml files
         param_fpath = PARAM_DIR / f'error-{param_tag}.yaml'
         kwargs = utils.read_yaml(param_fpath)
-
         fn = kwargs.pop('fn')
         eye = gaze_file.name.split('-')[1]
         func = utils.get_function(fn)
@@ -413,7 +412,6 @@ def compute_error(gaze_file,
     except:
         # Print something?
         failed = True
-
     # Manage ouptut file
     fname = f'error-{eye}-{param_tag}-{input_hash}-{epoch_str}.npz'
     if failed:
@@ -636,7 +634,7 @@ def make_pipeline_vedb(session,
                     epoch=gaze_pipeline.validation_epoch_split.lzout.epochs,
                     start_frame=gaze_pipeline.validation_epoch_split.lzout.start_frames,
                     end_frame=gaze_pipeline.validation_epoch_split.lzout.end_frames,
-                    is_verbose=is_verbose,) )
+                    is_verbose=is_verbose,) ).split('epoch')
 
                 validation_marker_out = [('validation_marker', 
                     gaze_pipeline.validation_detection.lzout.marker_locations),]
