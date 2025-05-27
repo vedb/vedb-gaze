@@ -310,7 +310,8 @@ def cluster_marker_points(markers,
                           max_marker_movement=None,
                           max_pupil_movement=None,
                           normalize_time=True,
-                          cut_cluster_outliers=False, # Should be True, False for backward compatibility
+                          cut_cluster_outliers=True, 
+                          min_n_clusters=5,
                           is_verbose=True,
                           ):
     """Find clusters of points in marker data
@@ -455,7 +456,9 @@ def cluster_marker_points(markers,
             print('%d groups after marker std filtering' %
                   (keep_clusters_binary.sum()))
     keep_cluster_numbers = unique_groups[keep_clusters_binary]
-
+    if len(keep_cluster_numbers) < min_n_clusters:
+        # Too few clusters meet required parameters
+        return None
     keep_clusters_i = np.in1d(groups, keep_cluster_numbers)
     if keep_clusters_i.sum() == 0:
         # No groups meet threshold
@@ -463,10 +466,7 @@ def cluster_marker_points(markers,
     else:
         return utils.filter_arraydict(markers, keep_clusters_i)
 
-# Note: Commented out values here should be defaults, but for inertia - 
-# some prior calls to this function did not specify defaults but still
-# need to re-run without those defaults. Need to update param dicts with
-# old defaults before changing these. Eventually.
+
 def find_epochs(marker,
                 all_timestamps,
                 pupil_left=None,
@@ -488,6 +488,7 @@ def find_epochs(marker,
                 cluster_by=("marker:timestamp",
                             "marker:norm_pos",),
                 cluster_kw=None,
+                cut_cluster_outliers=True,
                 min_cluster_time=0.3,
                 max_cluster_time=300,
                 max_cluster_std=4.0,
@@ -596,6 +597,8 @@ def find_epochs(marker,
                                                    max_cluster_std=max_cluster_std,
                                                    max_marker_movement=max_marker_movement,  # 10% of screen vertically
                                                    max_pupil_movement=max_pupil_movement,
+                                                   cut_cluster_outliers=cut_cluster_outliers,
+                                                   min_n_clusters=min_n_clusters,
                                                    is_verbose=is_verbose)
             if epoch_grpclean is None:
                 if is_verbose:
@@ -617,3 +620,90 @@ def find_epochs(marker,
         # can be matched with these from full pupil estimates.
         epochs = [ee[0] for ee in epochs]
     return epochs
+
+
+def filter_and_split(marker,
+                all_timestamps,
+                max_epoch_gap=15,
+                min_epoch_length=30,
+                max_epoch_length=150,
+                do_duration_pre_check=True,
+                duration_threshold=0.3,
+                size_std_threshold=None,
+                bimodal_std_threshold=2.5, 
+                aspect_ratio_threshold=1.75,
+                aspect_ratio_keep='less_than_threshold',
+                aspect_ratio_type='max/min',
+                image_aspect_ratio=4/3,
+                is_verbose=True,
+                ):
+    """Filter marker detections and split into multiple epochs as needed
+    """
+    if do_duration_pre_check:
+        marker = remove_brief_detections(marker, all_timestamps,
+                                         duration_threshold=duration_threshold)
+    marker = remove_small_detections(marker, 
+                                     size_std_threshold=size_std_threshold,
+                                     bimodal_std_threshold=bimodal_std_threshold,
+                                     image_aspect_ratio=image_aspect_ratio,
+                                     aspect_ratio_threshold=aspect_ratio_threshold,
+                                     aspect_ratio_type=aspect_ratio_type,
+                                     aspect_ratio_keep=aspect_ratio_keep,
+                                     )
+    
+    # Split into multiple epochs of calibration, validation as needed
+    epochs = split_timecourse(marker,
+                              max_epoch_gap=max_epoch_gap,
+                              min_epoch_length=min_epoch_length,
+                              max_epoch_length=max_epoch_length,
+                              is_verbose=is_verbose)
+
+def filter_and_cluster(marker,
+                all_timestamps,
+                do_duration_pre_check=True,
+                duration_threshold=0.3,
+                size_std_threshold=None,
+                bimodal_std_threshold=2.5, 
+                aspect_ratio_threshold=1.75, # for circles
+                aspect_ratio_keep='less_than_threshold',
+                aspect_ratio_type='max/min',
+                image_aspect_ratio=4/3,
+                min_n_clusters=5,
+                cluster_method='DBSCAN',
+                cluster_by=("marker:timestamp",
+                            "marker:norm_pos",),
+                cluster_kw=None,
+                cut_cluster_outliers=True,
+                min_cluster_time=0.3,
+                max_cluster_time=300,
+                max_cluster_std=4.0,
+                max_marker_movement=0.1, # 10% of screen vertically
+                max_pupil_movement=None,
+                is_verbose=True,):
+    
+    if do_duration_pre_check:
+        marker = remove_brief_detections(marker, all_timestamps,
+                                         duration_threshold=duration_threshold)
+        
+    marker = remove_small_detections(marker, 
+                                     size_std_threshold=size_std_threshold,
+                                     bimodal_std_threshold=bimodal_std_threshold,
+                                     image_aspect_ratio=image_aspect_ratio,
+                                     aspect_ratio_threshold=aspect_ratio_threshold,
+                                     aspect_ratio_type=aspect_ratio_type,
+                                     aspect_ratio_keep=aspect_ratio_keep,
+                                     )
+
+    marker_clustered = cluster_marker_points(marker,
+                                            cluster_method=cluster_method,
+                                            cluster_by=cluster_by,
+                                            cluster_kw=cluster_kw,
+                                            min_cluster_time=min_cluster_time,
+                                            max_cluster_time=max_cluster_time,
+                                            max_cluster_std=max_cluster_std,
+                                            max_marker_movement=max_marker_movement,  # 10% of screen vertically
+                                            max_pupil_movement=max_pupil_movement,
+                                            cut_cluster_outliers=cut_cluster_outliers,
+                                            min_n_clusters=min_n_clusters,
+                                            is_verbose=is_verbose)
+    return marker_clustered

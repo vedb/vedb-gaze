@@ -27,7 +27,7 @@ def read_yaml(parameters_fpath):
 def write_yaml(parameters, fpath):
     """Thin wrapper to write a dictionary to a yaml file"""
     with open(fpath, mode='w') as fid:
-        yaml.dump(pd.params, fid)
+        yaml.dump(parameters, fid)
 
 
 def unique(seq, idfun=None):
@@ -295,6 +295,30 @@ def arraydict_to_dictlist(arraydict):
     return out
 
 
+def get_frame_indices(start_time, end_time, all_time):
+	"""Finds start and end indices for frames that are between `start_time` and `end_time`
+	
+	Note that `end_frame` returned will be the first frame that occurs after
+	end_time, such that some data[start_frame:end_frame] will span the range 
+	between `start_time` and `end_time`. 
+
+	Parameters
+	----------
+	start_time: scalar
+		time after which to select frames
+	end_time: scalar
+		time before which to select frames
+	all_time: array-like
+		full array of timestamps for data into which to index.
+
+	"""
+	ti = (all_time > start_time) & (all_time < end_time)
+	time_clipped = all_time[ti]
+	indices, = np.nonzero(ti)
+	start_frame, end_frame = indices[0], indices[-1] + 1
+	return start_frame, end_frame 
+
+
 def get_function(function_name):
     """Load a function to a variable by name
 
@@ -328,86 +352,93 @@ def _check_dict_list(dict_list, n=1, **kwargs):
     else:
         raise ValueError('Requested number of items not found')
 
+
+
+# Delete me?
 def load_pipeline_elements(session,
-                           pupil_param_tag='plab_default',
-                           pupil_drift_param_tag=None,
-                           cal_marker_param_tag='circles_halfres',
-                           cal_marker_filter_param_tag='cluster_default',
-                           calib_param_tag='monocular_tps_default',
+                           pupil='pylids_eyelids_v2',
+                           pupil_detrending=None,
+                           calibration_marker='circles_halfres',
+                           calibration_filter='cluster_default',
+                           calibration='monocular_tps_cv_cluster_median_conf75_cut3std',
                            calibration_epoch=0,
-                           val_marker_param_tag='checkerboard_halfres',
-                           val_marker_filter_param_tag='basic_split',
-                           mapping_param_tag='default_mapper',
-                           error_param_tag='smooth_tps_default',
-                           dbi=None,
-                           is_verbose=True,
+                           validation_marker='checkerboard_halfres_%s',
+                           validation_filter='cluster_val_acc_ver02',
+                           gaze='default_mapper',
+                           error='smooth_tps_default',
+                           is_verbose=1,
                            ):
-    if dbi is None:
-        dbi = session.dbi
-    verbosity = copy.copy(dbi.is_verbose)
-    dbi.is_verbose = is_verbose >= 1
     
-    # Get all documents associated with session
-    session_docs = dbi.query(session=session._id)
     # Create outputs dict
     outputs = dict(session=session)
     
-    if pupil_param_tag is not None:
+    if pupil is not None:
         outputs['pupil'] = {}
         for eye in ['left', 'right']:
-            try:
-                print("> Searching for %s pupil (%s)" % (eye, pupil_param_tag))
-                outputs['pupil'][eye] = _check_dict_list(session_docs, 
-                                                         n=1,
-                                                         type='PupilDetection', 
-                                                         tag=pupil_param_tag, 
-                                                         eye=eye)
+            if is_verbose >= 1:
+                print("> Searching for %s pupil (%s)" % (eye, pupil))
+            
+            outputs['pupil'][eye] = _check_dict_list(session_docs, 
+                                                        n=1,
+                                                        type='PupilDetection', 
+                                                        tag=pupil, 
+                                                        eye=eye)
+            if is_verbose >= 1:
                 print(">> FOUND %s pupil" % (eye))
-            except:
-                print('>> NOT found')
 
     if cal_marker_param_tag is not None:
         try:
-            print("> Searching for calibration markers...")
+            if is_verbose >= 1:
+                print("> Searching for calibration markers...")
             outputs['calibration_marker_all'] = _check_dict_list(
                 session_docs, n=1, tag=cal_marker_param_tag, epoch='all')
-            print(">> FOUND it")
+            if is_verbose >= 1:
+                print(">> FOUND it")
         except:
-            print('>> NOT found')
+            if is_verbose >= 1:
+                print('>> NOT found')
 
     if cal_marker_filter_param_tag is not None:
         try:
-            print("> Searching for filtered calibration markers...")
+            if is_verbose >= 1:
+                print("> Searching for filtered calibration markers...")
             cfiltered_tag = '-'.join([cal_marker_param_tag,
                                       cal_marker_filter_param_tag])
             outputs['calibration_marker_filtered'] = _check_dict_list(
                 session_docs, n=1, tag=cfiltered_tag, epoch=calibration_epoch)
-            print(">> FOUND it")
+            if is_verbose >= 1:
+                print(">> FOUND it")
         except:
-            print('>> NOT found')
+            if is_verbose >= 1:
+                print('>> NOT found')
 
     if val_marker_param_tag is not None:
         try:
             if isinstance(val_marker_param_tag, tuple):
                 for t in val_marker_param_tag:
-                    print("> Searching for validation markers...")
+                    if is_verbose >= 1:
+                        print("> Searching for validation markers...")
                     tmp = _check_dict_list(
                         session_docs, n=1, tag=t, epoch='all')
                     outputs['validation_marker_all'] = tmp
                     if not tmp.failed:
                         break
             else:
-                print("> Searching for validation markers...")
+                if is_verbose >= 1:
+                    print("> Searching for validation markers...")
                 outputs['validation_marker_all'] = _check_dict_list(
                     session_docs, n=1, tag=val_marker_param_tag, epoch='all')
 
-            print(">> FOUND it")
+            if is_verbose >= 1:
+                print(">> FOUND it")
         except:
-            print('>> NOT found')
+            if is_verbose >= 1:
+                print('>> NOT found')
 
     if val_marker_filter_param_tag is not None:
         try:
-            print("> Searching for filtered validation markers...")
+            if is_verbose >= 1:
+                print("> Searching for filtered validation markers...")
             vfiltered_tag = '-'.join([val_marker_param_tag,
                                     val_marker_filter_param_tag])
             tmp = _check_dict_list(session_docs, n=None, tag=vfiltered_tag)
@@ -415,7 +446,8 @@ def load_pipeline_elements(session,
                 1/0  # error out, nothing found
             tmp = sorted(tmp, key=lambda x: x.epoch)
             outputs['validation_marker_filtered'] = tmp
-            print(">> FOUND %d" % (len(tmp)))
+            if is_verbose >= 1:
+                print(">> FOUND %d" % (len(tmp)))
         except:
             print(">> NOT found")
 
@@ -431,8 +463,9 @@ def load_pipeline_elements(session,
                 outputs['gaze'] = {}
                 outputs['error'] = {}
             try:
-                print("> Searching for %s calibration" % eye)
-                calib_tag_full = '-'.join([pupil_param_tag, 
+                if is_verbose >= 1:
+                    print("> Searching for %s calibration" % eye)
+                calib_tag_full = '-'.join([pupil, 
                                            cal_marker_param_tag, 
                                            cal_marker_filter_param_tag,
                                            calib_param_tag])
@@ -442,12 +475,15 @@ def load_pipeline_elements(session,
                     tag=calib_tag_full,
                     eye=eye,
                     epoch=calibration_epoch)
-                print(">> FOUND %s calibration" % eye)
+                if is_verbose >= 1:
+                    print(">> FOUND %s calibration" % eye)
             except:
-                print('>> NOT found')
+                if is_verbose >= 1:
+                    print('>> NOT found')
             try:
-                print("> Searching for %s gaze" % eye)
-                gaze_tag_full = '-'.join([pupil_param_tag,
+                if is_verbose >= 1:
+                    print("> Searching for %s gaze" % eye)
+                gaze_tag_full = '-'.join([pupil,
                                           cal_marker_param_tag,
                                           cal_marker_filter_param_tag,
                                           calib_param_tag,
@@ -455,13 +491,16 @@ def load_pipeline_elements(session,
                                           ])
                 outputs['gaze'][eye] = _check_dict_list(session_docs, n=1, 
                     type='Gaze', tag=gaze_tag_full, eye=eye)
-                print(">> FOUND %s gaze" % eye)
+                if is_verbose >= 1:
+                    print(">> FOUND %s gaze" % eye)
             except:
-                print('>> NOT found')
+                if is_verbose >= 1:
+                    print('>> NOT found')
 
             try:
-                print("> Searching for error")
-                err_tags = [pupil_param_tag, 
+                if is_verbose >= 1:
+                    print("> Searching for error")
+                err_tags = [pupil, 
                             cal_marker_param_tag, 
                             cal_marker_filter_param_tag,
                             calib_param_tag, 
@@ -477,7 +516,8 @@ def load_pipeline_elements(session,
                     1/0  # error out, nothing found                                        
                 err = sorted(tmp, key=lambda x: x.epoch)
                 outputs['error'][eye] = err
-                print(">> FOUND it")
+                if is_verbose >= 1:
+                    print(">> FOUND it")
             except:
                 print(">> NO error found for %s"%eye)
 
@@ -499,7 +539,6 @@ def load_pipeline_elements(session,
               (n_err_left, n_err_right))
             _ = outputs.pop("error")
 
-    dbi.is_verbose = verbosity
 
     return outputs
 

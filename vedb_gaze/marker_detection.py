@@ -110,7 +110,7 @@ def find_concentric_circles(video_file,
         batch_start = batch * batch_size + start_frame
         batch_end = np.minimum(batch_start + batch_size, end_frame)
         print("Loading batch of %d frames..." % (batch_end-batch_start))
-        video_data = file_io.load_mp4(
+        video_data = file_io.load_video(
             video_file,
             frames=(batch_start, batch_end),
             size=scale,
@@ -331,7 +331,7 @@ def find_checkerboard(
         batch_start = batch * batch_size + start_frame
         batch_end = np.minimum(batch_start + batch_size, end_frame)
         print('Loading...')
-        video_data = file_io.load_mp4(
+        video_data = file_io.load_video(
             video_file,
             frames=(batch_start, batch_end),
             size=scale,

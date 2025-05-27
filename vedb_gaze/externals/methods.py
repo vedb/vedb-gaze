@@ -94,7 +94,7 @@ def dist_pts_ellipse(ellipse, points):
         (ex, ey)
     )  # move pts to ellipse appears at origin , with this we copy data -deliberatly!
 
-    M_rot = np.mat(
+    M_rot = np.asmatrix(
         [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
     )
     pts = np.array(

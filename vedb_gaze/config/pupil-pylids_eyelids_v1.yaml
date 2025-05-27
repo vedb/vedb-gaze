@@ -1,0 +1,4 @@
+estimate_eyelids: true
+estimate_pupils: false
+fn: pylids.analyze_video
+model_name: eyelids_v1

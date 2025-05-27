@@ -1,7 +1,10 @@
+cluster_reduce_fn: null
 extrapolate: false
+fn: vedb_gaze.error_computation.compute_error
 lambd: 1.0
 method: tps
 min_pupil_confidence: 0.6
+outlier_stds: null
 vertical_horizontal_smooth_error_resolution:
 - 300
 - 400

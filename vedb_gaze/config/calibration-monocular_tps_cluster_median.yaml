@@ -1,0 +1,5 @@
+calibration_type: monocular_tps
+cluster_reduce_fn: numpy.nanmedian
+fn: vedb_gaze.calibration.Calibration
+lambd: 1
+min_calibration_confidence: 0.6
