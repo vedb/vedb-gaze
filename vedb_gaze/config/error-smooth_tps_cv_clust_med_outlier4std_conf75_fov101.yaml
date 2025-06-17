@@ -24,3 +24,5 @@ outlier_stds: 4
 vertical_horizontal_smooth_error_resolution:
 - 300
 - 400
+degrees_horiz: 101
+degrees_vert: 75.75

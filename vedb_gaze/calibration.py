@@ -685,6 +685,8 @@ class Calibration(object):
 
     def save(self, fpath):
         """Save critical data to do mappings of pupil to gaze"""
+        # Because numpy has gotten fussy about inhomogenous arrays
+        self.map_params = np.asanyarray(self.map_params, dtype=np.object_)
         np.savez(fpath, **self.calibration_data)
 
     @classmethod

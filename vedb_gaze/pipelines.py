@@ -5,6 +5,7 @@ import tqdm.notebook
 import file_io
 import os
 import pathlib
+import hashlib
 
 from . import utils
 from .options import config
@@ -70,8 +71,6 @@ def pupil_detection(eye_video_file,
         directory for 
 
     """
-    if is_verbose:
-        print("\n=== Finding pupil locations ===\n")
     if is_notebook():
         progress_bar = tqdm.notebook.tqdm
     else:
@@ -85,6 +84,8 @@ def pupil_detection(eye_video_file,
         return fpath
     if fpath_fail.exists():
         return fpath_fail
+    if is_verbose:
+        print("\n=== Finding pupil locations ===\n")    
     # Load parameters from stored yaml files
     param_fpath = PARAM_DIR / f'pupil-{param_tag}.yaml'
     kwargs = utils.read_yaml(param_fpath)
@@ -134,10 +135,10 @@ def marker_detection(video_file,
     output_dir = pathlib.Path(output_dir)
     # Check for extant file / failed run
     fpath = output_dir / f'markers-{param_tag}-{epoch_str}.npz'
-    fpath_fail = (fpath.parent / fpath.name).replace('.npz','.failed')
     if fpath.exists():
         return fpath
-    elif fpath_fail.exists():
+    fpath_fail = fpath.parent / fpath.name.replace('.npz','.failed')
+    if fpath_fail.exists():
         return fpath_fail
 
     if is_verbose:
@@ -180,9 +181,10 @@ def marker_detection(video_file,
     if failed:
         # if failed, save empty text file
         fpath_fail.open(mode='w')
+        return fpath_fail
     else:
         np.savez(fpath, **data)                    
-    return fpath
+        return fpath
 
 def marker_splitting(marker_file,
         time_file,
@@ -190,8 +192,6 @@ def marker_splitting(marker_file,
         output_dir,
         is_verbose=False):
     """"""
-    if is_verbose:
-        print(f"\n=== Finding marker epochs ({param_tag}) ===\n")
     if is_notebook:
         progress_bar = tqdm.notebook.tqdm
     else:
@@ -200,15 +200,18 @@ def marker_splitting(marker_file,
     # assure `output_dir` is a pathlib object
     output_dir = pathlib.Path(output_dir)
     # Check for failed input
-    if 'failed' in marker_file:
+    if 'failed' in str(marker_file):
         return 'previous_step.failed'
     # Check for extant file / previous failed run of this step
     _, orig_tag, epoch_str = marker_file.name.split('-')
+    epoch_str = os.path.splitext(epoch_str)[0]
     fname_test = f'marker-{orig_tag}-{param_tag}-epoch*'
     # Potentially multi-file check
     files_out, _ = check_files(output_dir, fname_test)
     if len(files_out) > 0:
         return files_out
+    if is_verbose:
+        print(f"\n=== Finding marker epochs ({param_tag}) ===\n")
 
     # Get marker file
     marker_data = dict(np.load(marker_file))
@@ -260,15 +263,19 @@ def marker_clustering(marker_file,
     # assure `output_dir` is a pathlib object
     output_dir = pathlib.Path(output_dir)
     # Check for failed input
-    if 'failed' in marker_file:
+    if 'failed' in str(marker_file):
         return output_dir / 'previous_step.failed'
     # Check for extant file / previous failed run of this step
     _, orig_tag, epoch_str = marker_file.name.split('-')
-    fname_test = f'marker-{orig_tag}-{param_tag}-epoch*'
-    # Potentially multi-file check
-    files_out, _ = check_files(output_dir, fname_test)
-    if len(files_out) > 0:
-        return files_out
+    epoch_str = os.path.splitext(epoch_str)[0]
+    # Check for extant file / failed run
+    fpath = output_dir / f'markers-{orig_tag}-{param_tag}-{epoch_str}.npz'
+    if fpath.exists():
+        return fpath
+    fpath_fail = fpath.parent / fpath.name.replace('.npz','.failed')
+    if fpath_fail.exists():
+        return fpath_fail
+
     
     # Get marker file
     marker_data = dict(np.load(marker_file))
@@ -285,15 +292,18 @@ def marker_clustering(marker_file,
     if 'progress_bar' in default_kw:
         kwargs['progress_bar'] = progress_bar
     # Run function; inputs must be marker data, all_timestamps
-    data = func(marker_data, all_timestamps, **kwargs,)
-    # Detect failure
-    failed = data is None #len(data) == 0
+    try:
+        data = func(marker_data, all_timestamps, **kwargs,)
+        # Detect failure
+        failed = data is None #len(data) == 0
+    except:
+        failed = True
     # Manage epochs
     if failed:
-        fpath = output_dir / f'marker-{orig_tag}-{param_tag}-{epoch_str}.failed'
+        fpath = output_dir / f'markers-{orig_tag}-{param_tag}-{epoch_str}.failed'
         fpath.open(mode='w')
     else:
-        fpath = output_dir / f'marker-{orig_tag}-{param_tag}-{epoch_str}.npz'
+        fpath = output_dir / f'markers-{orig_tag}-{param_tag}-{epoch_str}.npz'
         np.savez(fpath, **data)
     return fpath
 
@@ -338,7 +348,7 @@ def compute_calibration(marker_file,
 
     # Get marker file
     marker_data = dict(np.load(marker_file))
-    pupil_data = [dict(np.load(fp)) for fp in pupil_files]
+    pupil_data = [dict(np.load(fp, allow_pickle=True)) for fp in pupil_files]
     # Load parameters from stored yaml files
     param_fpath = PARAM_DIR / f'calibration-{param_tag}.yaml'
     kwargs = utils.read_yaml(param_fpath)
@@ -359,7 +369,7 @@ def compute_calibration(marker_file,
     # Manage ouptut file
     if failed:
         fpath = output_dir / fname.replace('.npz','.failed')
-        fpath.open()
+        fpath.open(mode='w')
     else:
         fpath = output_dir / fname
         cal.save(fpath)
@@ -375,13 +385,16 @@ def map_gaze(pupil_files,
     # Handle inputs
     if not isinstance(pupil_files, (list, tuple)):
         pupil_files = [pupil_files]
-
-    fname = f'gaze_{eye}-{param_tag}-{calibration_tag}-{input_hash}.npz'
-    # assure `output_dir` is a pathlib object
-    output_dir = pathlib.Path(output_dir)
     # Check for failed input
     if ('failed' in str(calibration_file)) or any(['failed' in str(pf) for pf in pupil_files]):
         return output_dir / 'previous_step.failed'
+    # Get info from file name
+    _, eye, calibration_tag, input_hash = calibration_file.name.split('-')
+    input_hash = os.path.splitext(input_hash)[0]
+    fname = f'gaze-{eye}-{param_tag}-{calibration_tag}-{input_hash}.npz'
+    #print(f'map_gaze fname is: {fname}')
+    # assure `output_dir` is a pathlib object
+    output_dir = pathlib.Path(output_dir)
     # Check for extant file / previous failed run of this step
     fpath = output_dir / fname
     if fpath.exists():
@@ -394,15 +407,14 @@ def map_gaze(pupil_files,
         print("\n=== Computing gaze ===\n")
 
     # Get marker file
-    pupil_data = [dict(np.load(fp)) for fp in pupil_files]
+    pupil_data = [dict(np.load(fp, allow_pickle=True)) for fp in pupil_files]
     calibration = Calibration.load(calibration_file)
-    _, eye, calibration_tag, input_hash = calibration_file.name.split('-')
+    
     # Load parameters from stored yaml files
     param_fpath = PARAM_DIR / f'gaze-{param_tag}.yaml'
     kwargs = utils.read_yaml(param_fpath)
     fn = kwargs.pop("fn")
     func = utils.get_function(fn)
-    
     if len(pupil_data) == 1:
         # only one eye
         pupil_data = pupil_data[0]
@@ -430,19 +442,20 @@ def compute_error(gaze_file,
     if is_verbose:
         print("\n=== Computing error ===\n")
     try:
-        # Get marker file
-        _, orig_tag, cluster_tag, epoch_str = marker_file.name.split('-')
-        fname = f'error-{eye}-{param_tag}-{input_hash}-{epoch_str}.npz'
-        # assure `output_dir` is a pathlib object
-        output_dir = pathlib.Path(output_dir)
         # Check for failed input
         if ('failed' in str(marker_file)) or ('failed' in str(gaze_file)):
             return output_dir / 'previous_step.failed'
+        # Get marker file
+        _, orig_tag, cluster_tag, epoch_str = marker_file.name.split('-')
+        epoch_str = os.path.splitext(epoch_str)[0]
+        fname = f'error-{eye}-{param_tag}-{input_hash}-{epoch_str}.npz'
+        # assure `output_dir` is a pathlib object
+        output_dir = pathlib.Path(output_dir)
         # Check for extant file / previous failed run of this step
         fpath = output_dir / fname
         if fpath.exists():
             return fpath
-        fpath_fail = output_dir / (fname.replace('.npz', 'failed'))
+        fpath_fail = output_dir / (fname.replace('.npz', '.failed'))
         if fpath_fail.exists():
             return fpath_fail
 
@@ -460,7 +473,14 @@ def compute_error(gaze_file,
 
         # Detect failure in some more subtle way?
         failed = False
+    except np.linalg.LinAlgError as le:
+        print(le.args)
+        failed = True
+    except ValueError as ve:
+        print(ve.args)
+        failed = True
     except:
+        raise
         # Print something?
         failed = True
 
@@ -485,12 +505,18 @@ def split_time(marker_time_file, marker_type):
         either 'calibration_frames' or 'validation_frames'
     """
     marker_times = utils.read_yaml(marker_time_file)
+    if marker_type not in marker_times:
+        # Not included
+        return [], [], []
     epoch_frames = marker_times[marker_type]
     # Add epoch number as third parameter
     epochs = list(range(len(epoch_frames)))
     start_frames = [x[0] for x in epoch_frames]
     end_frames = [x[1] for x in epoch_frames]
-    
+    if (len(epoch_frames) == 1) and (start_frames[0] == end_frames[0]):
+        epochs = []
+        start_frames = []
+        end_frames = []
     return epochs, start_frames, end_frames
 
 
@@ -518,9 +544,9 @@ def pipeline_vedb(session,
                   validation_marker_tag='checkerboard_halfres_4x7squares',
                   validation_split_tag=None, 
                   validation_cluster_tag='cluster_checkerboards',
-                  calibration_tag='calibration-monocular_tps_cv_cluster_median_conf75_cut3std',
+                  calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
                   gaze_tag='default_mapper',
-                  error_tag='error-smooth_tps_cv_clust_med_outlier4std_conf75', 
+                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
                   calibration_epoch=0,
                   input_base=BASE_DIR,
                   output_base=PYDRA_OUTPUT_DIR,
@@ -549,16 +575,22 @@ def pipeline_vedb(session,
     # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
     calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
-                                       pupil_tag, pupil_detrend_tag] if not x is None]
-    calibration_input_hash = hash('-'.join(calibration_args))
+                                       pupil_tag, pupil_detrend_tag] if x is not None]
+    # '-' will mess up later parsing of file names, so replace; this *might* make hashes non-unique, but is most likely to be fine.
+    calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    #print('Calibration input hash:')
+    #print(calibration_input_hash)
     error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
                                        pupil_tag, pupil_detrend_tag, \
                                        calibration_tag, gaze_tag,
                                        validation_marker_tag, validation_split_tag, validation_cluster_tag, \
-                                       ] if not x is None]
-    error_input_hash = hash('-'.join(error_args))
-
+                                       ] if x is not None]
+    error_input_hash = str(hash('-'.join(error_args))).replace('-','0')
+    error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    #print('Error input hash:')
+    #print(error_input_hash)
+    
     # # asterisk to allow for failed attempts and subsequent error handling. All outputs should be npz files if successful.
     # output_file_names = dict(
     #     pupil=f'pupil_detection-%s-{pupil_tag}.*',
@@ -600,12 +632,12 @@ def pipeline_vedb(session,
             ## Calibration
             # Do manual split, select epoch, detect, cluster
             calibration_epochs, calibration_start_frames, calibration_end_frames = split_time(
-                    marker_file=input_file_names['marker_time_file'],
+                    marker_time_file=input_file_names['marker_time_file'],
                     marker_type='calibration_frames',
                     )
             # Run calibration on that epoch only
             calibration_markers = marker_detection(
-                video_file=input_file_names['world_time_file'],
+                video_file=input_file_names['world_video_file'],
                 time_file=input_file_names['world_time_file'],
                 param_tag=calibration_marker_tag,
                 output_dir=output_dir,
@@ -641,15 +673,14 @@ def pipeline_vedb(session,
         if input_file_names['marker_time_file'].exists():
             # Do manual split
             validation_epochs, validation_start_frames, validation_end_frames = split_time(
-                marker_file=input_file_names['marker_time_file'],
+                marker_time_file=input_file_names['marker_time_file'],
                 marker_type='validation_frames',
                 )
             # Run detection
             validation_markers = []
             for this_epoch, this_start, this_end in zip(validation_epochs, validation_start_frames, validation_end_frames):
                 tmp_vm = marker_detection(
-                    name='validation_detection',
-                    video_file=input_file_names['world_time_file'],
+                    video_file=input_file_names['world_video_file'],
                     time_file=input_file_names['world_time_file'],
                     param_tag=validation_marker_tag,
                     output_dir=output_dir,
@@ -665,7 +696,7 @@ def pipeline_vedb(session,
 
     # Cluster calibration marker output
     if calibration_cluster_tag is None:
-        calibration_markers_clustered = []
+        calibration_markers_clustered = None
     else:
         calibration_markers_clustered = marker_clustering(
             marker_file=calibration_markers,
@@ -691,28 +722,17 @@ def pipeline_vedb(session,
             validation_markers_clustered.append(tmp_vm)
 
     ## Pupil detection
-    if pupil_tag is None:
-        pupils = {}
-    else:
-        p_left = pupil_detection(
-                name='pupil_left',
-                eye_video_file=input_file_names['eye_video_file']['left'],
-                eye_time_file=input_file_names['eye_time_file']['left'],
-                param_tag=pupil_tag,
-                eye='left',
-                output_dir=output_dir,
-                is_verbose=is_verbose,
-                )
-        p_right = pupil_detection(
-                name='pupil_right',
-                eye_video_file=input_file_names['eye_video_file']['right'],
-                eye_time_file=input_file_names['eye_time_file']['right'],
-                param_tag=pupil_tag,
-                eye='right',
-                output_dir=output_dir,
-                is_verbose=is_verbose,
-                )
-        pupils = {'left':p_left, 'right':p_right}
+    pupils = {}
+    if pupil_tag is not None:
+        for eye in ['left','right']:
+            pupils[eye] = pupil_detection(
+                    eye_video_file=input_file_names['eye_video_file'][eye],
+                    eye_time_file=input_file_names['eye_time_file'][eye],
+                    param_tag=pupil_tag,
+                    eye=eye,
+                    output_dir=output_dir,
+                    is_verbose=is_verbose,
+                    )
 
     # Computing calibration 
     calibration_out = {}
@@ -763,9 +783,8 @@ def pipeline_vedb(session,
             gaze[eye] = map_gaze(
                 pupil_files=pupil_files,
                 calibration_file=calibration_out[eye],
-                calibration_epoch=calibration_epoch,
                 param_tag=gaze_tag,
-                eye=eye,
+                output_dir=output_dir,
                 is_verbose=is_verbose)
     
     error = {}

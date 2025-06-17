@@ -41,8 +41,8 @@ def compute_error(marker,
                   min_pupil_confidence=0.6, 
                   cluster_reduce_fn=np.median,
                   image_resolution=(2048, 1536),
-                  degrees_horiz=125,
-                  degrees_vert=111,):
+                  degrees_horiz=101,
+                  degrees_vert=75.75,):
     """Compute error at set points and interpolation between those points
 
     Parameters
@@ -141,6 +141,10 @@ def compute_error(marker,
         gz_image = gz_image[~outliers]
         marker_pos = marker_pos[~outliers]
         gaze_pos = gaze_pos[~outliers]
+    # Check whether we have cut too many markers
+    if len(marker_pos) < 4:
+        raise ValueError('Too few points to compute error across visual field.')
+
     # Angle of error
     err_vector = gz_image - vp_image
     gaze_err_angle = np.arctan2(*err_vector.T)
