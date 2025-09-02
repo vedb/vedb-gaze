@@ -1,0 +1,24 @@
+aspect_ratio_keep: greater_than_threshold
+aspect_ratio_threshold: 1.0
+aspect_ratio_type: x/y
+bimodal_std_threshold: 2.5
+cluster_by:
+- marker:timestamp
+- marker:norm_pos
+cluster_kw:
+  eps: 0.05
+  min_samples: 3
+cluster_method: DBSCAN
+cut_cluster_outliers: true
+do_cluster_clean: true
+do_duration_pre_check: true
+duration_threshold: 0.3
+fn: vedb_gaze.marker_parsing.find_epochs
+max_cluster_std: 4.0
+max_cluster_time: 10000
+max_epoch_gap: 15
+max_epoch_length: 150
+max_marker_movement: null
+min_cluster_time: 0.3
+min_epoch_length: 15
+min_n_clusters: 5

@@ -1,7 +1,0 @@
-extrapolate: false
-lambd: 0.1
-method: tps
-min_pupil_confidence: 0.6
-vertical_horizontal_smooth_error_resolution: !!python/tuple
-- 300
-- 400

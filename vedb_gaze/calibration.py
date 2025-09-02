@@ -25,15 +25,15 @@ from .utils import (
 from .visualization import colormap_2d
 from .marker_parsing import marker_cluster_stat
 
-from pupil_recording_interface.externals.data_processing import (
+from .externals.data_processing import (
     _filter_pupil_list_by_confidence,
     _extract_2d_data_monocular,
     _extract_2d_data_binocular,
     _match_data,
 )
-from pupil_recording_interface.externals import calibrate_2d
+from .externals import calibrate_2d
 
-from pupil_recording_interface.externals.gaze_mappers import Binocular_Gaze_Mapper
+from .externals.gaze_mappers import Binocular_Gaze_Mapper
 
 import logging
 logger = logging.getLogger(__name__)
@@ -685,6 +685,8 @@ class Calibration(object):
 
     def save(self, fpath):
         """Save critical data to do mappings of pupil to gaze"""
+        # Because numpy has gotten fussy about inhomogenous arrays
+        self.map_params = np.asanyarray(self.map_params, dtype=np.object_)
         np.savez(fpath, **self.calibration_data)
 
     @classmethod
@@ -762,9 +764,9 @@ class Calibration(object):
                 return_type='arraydict')
             # Fill in `_id`` and `confidence` fields
             grid_pts_array_l['id'] = np.ones_like(
-                grid_pts_array_l['timestamp'], dtype=np.int64)
+                grid_pts_array_l['timestamp'], dtype=int64)
             grid_pts_array_l['confidence'] = np.ones_like(
-                grid_pts_array_l['timestamp'], dtype=np.float32)
+                grid_pts_array_l['timestamp'], dtype=float32)
             # Continue with grid of locations for right
             grid_pts_array_r = self._get_grid_points(
                 'right', 
@@ -774,9 +776,9 @@ class Calibration(object):
                 return_type='arraydict')
             # Fill in `_id`` and `confidence` fields
             grid_pts_array_r['id'] = np.zeros_like(
-                grid_pts_array_r['timestamp'], dtype=np.int64)
+                grid_pts_array_r['timestamp'], dtype=int64)
             grid_pts_array_r['confidence'] = np.ones_like(
-                grid_pts_array_r['timestamp'], dtype=np.float32)
+                grid_pts_array_r['timestamp'], dtype=float32)
             if (grid_pts_array_l is None) or (grid_pts_array_r is None):
                 grid_array = None
             else:
@@ -847,10 +849,10 @@ class Calibration(object):
         if ci.sum() < min_possible_eye_points:
             return None
         x, y = pupils['norm_pos'][ci].T
-        vmin, vmax = np.min(y), np.max(y)
-        hmin, hmax = np.min(x), np.max(x)
-        height = np.ptp(y)
-        width = np.ptp(x)
+        vmin, vmax = np.nanmin(y), np.nanmax(y)
+        hmin, hmax = np.nanmin(x), np.nanmax(x)
+        height = np.ptp(y[~np.isnan(y)])
+        width = np.ptp(x[~np.isnan(x)])
         vmin += height * sc
         vmax -= height * sc
         hmin += width * sc
@@ -858,7 +860,7 @@ class Calibration(object):
         aspect_ratio = width / height
         pts = get_point_grid(
             n_horizontal_lines=n_horizontal_lines,
-            n_vertical_lines=np.int(
+            n_vertical_lines=int(
                 n_horizontal_lines * aspect_ratio) if n_vertical_lines is None else n_vertical_lines,
             st_horizontal=hmin,
             fin_horizontal=hmax,

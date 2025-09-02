@@ -1,5 +1,0 @@
-do_cluster_clean: false
-do_duration_pre_check: true
-duration_threshold: 0.3
-max_epoch_gap: 15
-min_epoch_length: 30

@@ -1,2 +1,4 @@
 calibration_type: monocular_pl
+cluster_reduce_fn: null
+fn: vedb_gaze.calibration.Calibration
 min_calibration_confidence: 0.6

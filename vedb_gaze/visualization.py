@@ -32,7 +32,12 @@ def gaze_hist(gaze,
     cmap='gray_r',
     hist_bins_x=81, 
     hist_bins_y=61, 
-    field='norm_pos', 
+    field='norm_pos',
+    vmin_x=0,
+    vmax_x=1,
+    vmin_y=0,
+    vmax_y=1, 
+    cmax_pct=97.5, 
     ax=None):
     """Make a 2D histogram of gaze positions
 
@@ -69,12 +74,12 @@ def gaze_hist(gaze,
     ci = gaze['confidence'] > confidence_threshold
     x, y = gaze[field][ci].T
     im_kw_hist = dict(
-        extent=[0, 1, 1, 0],
+        extent=[vmin_x, vmax_x, vmax_y, vmin_y],
         aspect='auto',
         cmap=cmap)
     hst = np.histogram2d(y, x, bins=[np.linspace(
-        0, 1, hist_bins_y), np.linspace(0, 1, hist_bins_x)], density=True)
-    vmax_hst = np.percentile(hst[0], 97.5)
+        vmin_y, vmax_y, hist_bins_y), np.linspace(vmin_x, vmax_x, hist_bins_x)], density=True)
+    vmax_hst = np.percentile(hst[0], cmax_pct)
     hst_im = ax.imshow(hst[0], vmax=vmax_hst, **im_kw_hist)
     return hst_im
 
@@ -359,14 +364,16 @@ def make_dot_overlay_animation(
     # print(dot_markers)
     # First set up the figure, the axis, and the plot element we want to animate
     fig, ax = plt.subplots(figsize=figsize)
-    im = ax.imshow(video_data[0], extent=extent, cmap="gray", aspect="auto")
+    im = ax.imshow(video_data[0], extent=extent, cmap="gray", aspect="auto", vmin=0, vmax=255)
     ax.set_xticks([])
     ax.set_yticks([])
     dots = []
     for this_dot, dc, dw, dm, dl in zip(dots_matched, dot_colors, dot_widths, dot_markers, dot_labels):
-        tmp = plt.scatter(*this_dot['norm_pos'].T,
+        tmp = ax.scatter(*this_dot['norm_pos'].T,
                           s=dw, c=dc, marker=dm, label=dl)
         dots.append(tmp)
+    ax.set_xlim([0, 1])
+    ax.set_ylim([1, 0])
     artists = (im,) + tuple(dots)
     plt.close(fig.number)
     # initialization function: plot the background of each frame
@@ -1777,7 +1784,7 @@ def render_gaze_video(session,
     eye_left_vid.VideoObj.release()
     eye_right_vid.VideoObj.release()
     files = sorted(sdir.glob('*png'))
-    fps = np.int(
+    fps = int(
         np.round(1/np.mean(np.diff(world_time[start_frame:end_frame]))))
     print(fps)
     file_io.write_movie_from_frames(files, sname, fps=fps,
@@ -1785,3 +1792,53 @@ def render_gaze_video(session,
     if cleanup_files:
         for f in files:
             f.unlink()
+
+def show_session(folder, 
+                n_frames=4, 
+                pct_start=0.10, 
+                pct_fin=0.90, 
+                sc=2, 
+                axs=None):
+    """Quickie visualization of frames from a session"""
+    video_file = folder / 'worldPrivate.mp4'
+    time_file = folder / 'world_timestamps_0start.mp4'
+    world_time = np.load(time_file)
+    recording_duratio = world_time[-1] - world_time[0]
+    image_size = [2048, 1536]
+    ar = image_size[0] / image_size[1]
+    st = int(np.floor(recording_duration * pct_start))
+    fin = int(np.floor(recording_duration * pct_fin))
+    #print(st, fin)
+    time_points = np.linspace(st, fin, n_frames)
+    #print(time_points)
+    nr,nc = vmt.plot_utils.find_squarish_dimensions(n_frames)
+    if ax is None:
+        fig, axs = plt.subplots(nc, nr, 
+                                figsize=(nr*sc * ar, nc*sc))
+    else:
+        fig = axs.flatten()[0].figure
+    for tp, ax in zip(time_points, axs.flatten()):
+        try:
+            wc = file_io.load_video(video_file, idx=[tp, tp+1])
+            title_add = ''
+        except IndexError:
+            wc = np.zeros([1] + image_size + [3])
+            title_add = ' (paused or missing)'
+        ax.imshow(wc[0])
+        ax.axis('off')
+        ax.set_title('%d seconds%s'%(tp, title_add))
+    plt.tight_layout()
+    return fig
+
+
+def background_fill_blocks(onoff, w=1, fcol=(.9, .9, .9), vert=False, zorder=-1, ylim=None, ax=None):
+    """Shade in xtick grid (every other tick mark is gray/white)"""
+    if ax is None:
+        ax = plt.gca()
+    if ylim is None:
+        ylim = plt.ylim()
+    for xf in onoff:
+        ax.fill(np.array([xf[0], xf[1], xf[1], xf[0]]),
+            [ylim[0], ylim[0], ylim[1], ylim[1]],
+            color=fcol, edgecolor='none', zorder=zorder)
+    plt.ylim(ylim)

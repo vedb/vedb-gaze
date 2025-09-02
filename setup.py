@@ -12,6 +12,7 @@ setup(
     package_data={
         'vedb_gaze':[
             'defaults.cfg',
+            'externals/',
             'config/*yaml'
         ]
     }

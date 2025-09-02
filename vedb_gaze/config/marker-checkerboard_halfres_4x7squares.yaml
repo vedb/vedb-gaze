@@ -1,0 +1,5 @@
+checkerboard_size:
+- 3
+- 6
+fn: vedb_gaze.marker_detection.find_checkerboard
+scale: 0.5
