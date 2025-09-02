@@ -58,6 +58,7 @@ def pupil_detection(eye_video_file,
         param_tag, 
         output_dir,
         eye='left', 
+        base_output_name=None,
         is_verbose=False):
     """Run a pupil detection function as a pipeline step
     
@@ -78,7 +79,10 @@ def pupil_detection(eye_video_file,
     # assure `output_dir` is a pathlib object
     output_dir = pathlib.Path(output_dir)
     # Check for extant file / failed run
-    fpath = output_dir / f'pupil_detection-{eye}-{param_tag}.npz'
+    if base_output_name is None:
+        fpath = output_dir / f'pupil_detection-{eye}-{param_tag}.npz'
+    else:
+        fpath = output_dir / f'{base_output_name}_pupil_detection-{eye}-{param_tag}.npz'
     fpath_fail = output_dir / (fpath.name.replace('.npz', 'failed'))
     if fpath.exists():
         return fpath
@@ -380,6 +384,7 @@ def map_gaze(pupil_files,
              calibration_file,
              param_tag,
              output_dir,
+             base_output_name=None,
              is_verbose=False):
     """Estimate gaze from calibration & pupil positions"""
     # Handle inputs
@@ -389,9 +394,12 @@ def map_gaze(pupil_files,
     if ('failed' in str(calibration_file)) or any(['failed' in str(pf) for pf in pupil_files]):
         return output_dir / 'previous_step.failed'
     # Get info from file name
-    _, eye, calibration_tag, input_hash = calibration_file.name.split('-')
+    eye, calibration_tag, input_hash = calibration_file.name.split('-')[-3:]
     input_hash = os.path.splitext(input_hash)[0]
-    fname = f'gaze-{eye}-{param_tag}-{calibration_tag}-{input_hash}.npz'
+    if base_output_name is None:
+        fname = f'gaze-{eye}-{param_tag}-{calibration_tag}-{input_hash}.npz'
+    else:
+        fname = f'{base_output_name}_gaze-{eye}-{param_tag}-{calibration_tag}-{input_hash}.npz'
     #print(f'map_gaze fname is: {fname}')
     # assure `output_dir` is a pathlib object
     output_dir = pathlib.Path(output_dir)
@@ -437,6 +445,7 @@ def compute_error(gaze_file,
              param_tag,
              output_dir,
              input_hash,
+             base_output_name=None,
              eye=None,
              is_verbose=False):
     if is_verbose:
@@ -446,9 +455,15 @@ def compute_error(gaze_file,
         if ('failed' in str(marker_file)) or ('failed' in str(gaze_file)):
             return output_dir / 'previous_step.failed'
         # Get marker file
-        _, orig_tag, cluster_tag, epoch_str = marker_file.name.split('-')
-        epoch_str = os.path.splitext(epoch_str)[0]
-        fname = f'error-{eye}-{param_tag}-{input_hash}-{epoch_str}.npz'
+        try:
+            orig_tag, cluster_tag, epoch_str = marker_file.name.split('-')[-3:]
+            epoch_str = ''.join(['-', os.path.splitext(epoch_str)[0]])
+        except:
+            epoch_str = ''
+        if base_output_name is None:
+            fname = f'error-{eye}-{param_tag}-{input_hash}{epoch_str}.npz'
+        else:
+            fname = f'{base_output_name}_error-{eye}-{param_tag}-{input_hash}{epoch_str}.npz'
         # assure `output_dir` is a pathlib object
         output_dir = pathlib.Path(output_dir)
         # Check for extant file / previous failed run of this step
@@ -821,3 +836,219 @@ session folder
 list of params: [pupil_detection, marker_detection, marker_filtering, calibration, gaze_estimation, ]
 
 """
+def pipeline_mri(base_dir,
+                 subject_id,
+                 task,
+                 session,
+                 calibration_marker_file,
+                 eyes=('left','right'),
+                  pupil_tag='pylids_pytorch_pupils_v1',
+                  pupil_detrend_tag=None,
+                  calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+                  gaze_tag='default_mapper',
+                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf75_fov12mri', 
+                  calibration_epoch=0,
+                  validation_epoch=None,
+                  evaluate_runs=None,
+                  is_verbose=False,
+                  video_dimensions=(800,600),
+                  ):
+    """Build a gaze pipeline based on a structured folder containing
+    video from fMRI eye tracking session and tags for each step of processing.
+    
+    Folder should be: 
+    <base_dir> / 
+        |
+        -<subject_id>
+            |
+            -ses-<session>
+                |
+                - videos
+                    |
+                    - <subject_id>_ses-<session>_task-calibration_run-0
+                    ...
+                    - <subject_id>_ses-<session>_task-<task>_run-0_left.mp4
+                    - <subject_id>_ses-<session>_task-<task>_run-0_right.mp4
+                    - <subject_id>_ses-<session>_task-<task>_run-1_left.mp4
+                    - <subject_id>_ses-<session>_task-<task>_run-1_right.mp4
+                    ...
+                - gaze
+                    |
+                    - <all outputs here>
+    It splits epochs based on EITHER a marker_times.yaml file (if it exists) or by 
+    epoch splitting based on assumptions (see marker_parsing.py)
+
+    Parameters
+    ----------
+    session is a string identifier for a vedb session, e.g. '2021_02_27_10_12_44'
+
+    'eyes' input is used for calibration, gaze, & error estimation, when we may use average
+    or binocular estimates of gaze. Calibration is handled separately from this parameter, 
+    because gaze may be simply an average of two separte 
+    """
+
+    if isinstance(eyes, str):
+        eyes = (eyes,)
+    # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
+    calibration_args = [x for x in [f'epoch{calibration_epoch:02d}', \
+                                       pupil_tag, pupil_detrend_tag] if x is not None]
+    # '-' will mess up later parsing of file names, so replace; this *might* make hashes non-unique, but is most likely to be fine.
+    calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    error_args = [x for x in [f'epoch{calibration_epoch:02d}', \
+                                       pupil_tag, pupil_detrend_tag, \
+                                       calibration_tag, gaze_tag,
+                                       ] if x is not None]
+    error_input_hash = str(hash('-'.join(error_args))).replace('-','0')
+    error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    
+    input_dir = base_dir / subject_id / f'ses-{session}' / 'videos' 
+    output_dir = base_dir / subject_id / f'ses-{session}' / 'gaze' 
+    if calibration_marker_file is None:
+        calibration_marker_file = base_dir / 'calibration_markers.npz'
+    eye_files_all = sorted(list(input_dir.glob('*mp4')))
+    eye_files_main = {}
+    eye_files_calibration = {}
+    for eye in eyes:
+        eye_files_calibration[eye] = [x for x in eye_files_all if ('calibration' in x.name) and (eye in x.name)]
+        if task is None:
+            eye_files_main[eye] = [x for x in eye_files_all if ('calibration' not in x.name) and (eye in x.name)]
+        else:
+            eye_files_main[eye] = [x for x in eye_files_all if (task in x.name) and (eye in x.name)]
+        if evaluate_runs is not None:
+            eye_files_main[eye] = [x for j, x in enumerate(eye_files_main[eye]) if j in evaluate_runs]
+
+    ## Pupil detection
+    pupils_main = {}
+    pupils_cal = {}
+    if pupil_tag is not None:
+        for eye in eyes:
+            tmp = []
+            for fname_eye in eye_files_calibration[eye] + eye_files_main[eye]:
+                fname_t = fname_eye.parent / fname_eye.name.replace(f'_{eye}.mp4', '.npy')
+                base_output_name = fname_eye.name.replace(f'_{eye}.mp4', '')
+                tmp.append(pupil_detection(
+                        eye_video_file=fname_eye,
+                        eye_time_file=fname_t,
+                        param_tag=pupil_tag,
+                        eye=eye,
+                        output_dir=output_dir,
+                        base_output_name=base_output_name,
+                        is_verbose=is_verbose,
+                        ))
+            pupils_cal[eye] = tmp[:len(eye_files_calibration[eye])]
+            pupils_main[eye] = tmp[len(eye_files_calibration[eye]):]
+            del tmp
+            print(eye, len(pupils_main[eye]), pupils_main[eye])
+    # Computing calibration 
+    calibration_out = {}
+    if calibration_tag is not None:        
+        if 'binocular' in calibration_tag:
+            # Run 
+            calibration_out['both'] = compute_calibration(
+                marker_file=calibration_marker_file,
+                pupil_files=[pupils_cal['left'][calibration_epoch], pupils_cal['right'][calibration_epoch]],
+                input_hash=calibration_input_hash,
+                param_tag=calibration_tag,
+                video_dimensions=video_dimensions,
+                output_dir=output_dir,
+                eye='both',
+                is_verbose=is_verbose,
+                )
+        elif 'monocular' in calibration_tag:
+            for eye in eyes:
+                calibration_out[eye] = compute_calibration(
+                    marker_file=calibration_marker_file,
+                    pupil_files=pupils_cal[eye][calibration_epoch],
+                    input_hash=calibration_input_hash,
+                    param_tag=calibration_tag,
+                    video_dimensions=video_dimensions,
+                    output_dir=output_dir,
+                    eye=eye,
+                    is_verbose=is_verbose,
+                )
+        else:
+            raise ValueError(f"Unknown calbration tag {calibration_tag}")
+            
+    # Mapping gaze    
+    gaze_val = {}
+    gaze_main = {}
+    if gaze_tag is not None:
+        # Check for presence in pl_elements
+        if 'monocular' in calibration_tag:
+            eyes_ = eyes
+        else:
+            eyes_ = ['both']
+        for eye in eyes_:
+            gaze_val[eye] = []
+            # Validation (second, etc calibration sessions)
+            if isinstance(validation_epoch, (list, tuple)):
+                validation_epochs = validation_epoch
+            elif validation_epoch is None:
+                validation_epochs = None
+            else:
+                validation_epochs = (validation_epoch,)
+            if validation_epochs is None:
+                validation_epochs = [j for j in range(len(pupils_cal[eyes[0]])) if j != calibration_epoch]
+            for j in validation_epochs:
+                print('Mapping validation ', j)
+                if eye == 'both':
+                    pupil_files = [pupils_cal['left'][j], pupils_cal['right'][j]]
+                    base_output_name = pupil_files[0].name.replace(f'_pupil_detection-left-{pupil_tag}.npz', '')
+                else:
+                    pupil_files = pupils_cal[eye][j]
+                    #pupil_detection-left-pylids_pytorch_v2.npz
+                    base_output_name = pupil_files.name.replace(f'_pupil_detection-{eye}-{pupil_tag}.npz', '')
+                tmp = map_gaze(
+                    pupil_files=pupil_files,
+                    calibration_file=calibration_out[eye],
+                    param_tag=gaze_tag,
+                    output_dir=output_dir,
+                    base_output_name=base_output_name,
+                    is_verbose=is_verbose)
+                gaze_val[eye].append(tmp)
+            
+            gaze_main[eye] = []
+            # Main experiment
+            for j in range(len(pupils_main[eyes[0]])):
+                print('Mapping main ', j)
+                if eye == 'both':
+                    pupil_files = [pupils_main['left'][j], pupils_main['right'][j]]
+                    base_output_name = pupil_files[0].name.replace(f'_pupil_detection-left-{pupil_tag}.npz', '')
+                else:
+                    pupil_files = pupils_main[eye][j]
+                    base_output_name = pupil_files.name.replace(f'_pupil_detection-{eye}-{pupil_tag}.npz', '')
+                tmp = map_gaze(
+                    pupil_files=pupil_files,
+                    calibration_file=calibration_out[eye],
+                    param_tag=gaze_tag,
+                    output_dir=output_dir,
+                    base_output_name=base_output_name,
+                    is_verbose=is_verbose)
+                gaze_main[eye].append(tmp)
+        
+    error = {}
+    if error_tag is not None:
+        # 'eyes' defined above in calibration computation, and all steps must run
+        # to compute error, so it will be defined.
+        for eye in eyes_:
+            error[eye] = []
+            for gv in gaze_val[eye]:
+                # This is getting cumbersome...
+                base_output_name = gv.name.replace(f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz', '')
+                tmp_e = compute_error(
+                    gaze_file=gv,
+                    marker_file=calibration_marker_file,
+                    param_tag=error_tag,
+                    base_output_name=base_output_name,
+                    output_dir=output_dir,
+                    eye=eye,
+                    input_hash=error_input_hash,
+                    is_verbose=is_verbose,)
+                error[eye].append(tmp_e)
+
+    return dict(pupils_main=pupils_main, 
+                pupils_cal=pupils_cal,
+                calibration=calibration_out,
+                gaze_val=gaze_val,
+                gaze_main=gaze_main,
+                error=error)
