@@ -17,6 +17,7 @@ PYDRA_OUTPUT_DIR = pathlib.Path(config.get('paths', 'pydra_cache') ).expanduser(
 BASE_OUTPUT_DIR = pathlib.Path(config.get('paths', 'output_dir') ).expanduser()
 PARAM_DIR = pathlib.Path(os.path.split(__file__)[0]) / 'config'
 
+# TODO: put these in a config file
 timestamp_template = 'timestamps_0start'
 world_template ='Private' # or ''
 eye_template = '' # or '_blur'
@@ -60,6 +61,7 @@ def pupil_detection(eye_video_file,
         eye='left', 
         base_output_name=None,
         is_verbose=False):
+        **gpu_kwargs):
     """Run a pupil detection function as a pipeline step
     
     Parameters
@@ -100,6 +102,8 @@ def pupil_detection(eye_video_file,
     default_kw = get_default_kwargs(func)
     if 'progress_bar' in default_kw:
         kwargs['progress_bar'] = progress_bar
+    if len(gpu_kwargs) > 0:
+        kwargs.update(gpu_kwargs)
     # Call function
     data = func(eye_video_file, timestamp_file=eye_time_file, **kwargs,)
     # Detect failure
@@ -566,6 +570,7 @@ def pipeline_vedb(session,
                   input_base=BASE_DIR,
                   output_base=PYDRA_OUTPUT_DIR,
                   is_verbose=False,
+                  gpu_kwargs=None,
                   ):
     """Build a gaze pipeline based on a VEDB folder and tags for each step of gaze processing.
     
@@ -587,46 +592,28 @@ def pipeline_vedb(session,
     input_dir = input_base.expanduser() / session
     # Output folder - For now, assume output to separate folder structure from input 
     output_dir = output_base.expanduser() / session
+    # gpu keyword arg handling: 
+    if gpu_kwargs is None:
+        gpu_kwargs = {}
     # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
-    calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
+    if any([x is None for x in [calibration_epoch, pupil_tag, calibration_tag]]):
+        # Late steps with hashes won't run without early steps
+        calibration_args = []
+        error_args = []
+    else:
+        calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
                                        pupil_tag, pupil_detrend_tag] if x is not None]
-    # '-' will mess up later parsing of file names, so replace; this *might* make hashes non-unique, but is most likely to be fine.
-    calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
-    #print('Calibration input hash:')
-    #print(calibration_input_hash)
-    error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
+        error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
                                        pupil_tag, pupil_detrend_tag, \
                                        calibration_tag, gaze_tag,
                                        validation_marker_tag, validation_split_tag, validation_cluster_tag, \
-                                       ] if x is not None]
+                                       ] if x is not None]                                       
+    # '-' will mess up later parsing of file names, so replace; this *might* make hashes non-unique, but is most likely to be fine.
+    calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
     error_input_hash = str(hash('-'.join(error_args))).replace('-','0')
     error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
-    #print('Error input hash:')
-    #print(error_input_hash)
-    
-    # # asterisk to allow for failed attempts and subsequent error handling. All outputs should be npz files if successful.
-    # output_file_names = dict(
-    #     pupil=f'pupil_detection-%s-{pupil_tag}.*',
-    #     pupil_detrend=f'pupil-%s-{pupil_tag}-{pupil_detrend_tag}.*', # blank for eye
-    #     # by epoch (and/or not): - fixed calibration epoch for now
-    #     calibration_marker=f'marker-{calibration_marker_tag}_*.*',
-    #     # by epoch (and/or not): - fixed calibration epoch for now
-    #     calibration_cluster=f'marker-{calibration_marker_tag}-{calibration_cluster_tag}-*.*', 
-    #     # Choice for division into epochs 
-    #     # a. check marker_times.yaml file for n epochs?
-    #     # b. have n_<cal or val>_epochs as an input? 
-    #     # c. file names are templates for anything with epochs. making a template flexible to 'all' or '00' may be annoying.
-    #     # by epoch (and/or not):
-    #     # Going with C, seems simplest at this level, probably later
-    #     validation_marker=f'marker-{validation_marker_tag}-*.*', # blank for epoch
-    #     # by epoch (and/or not):
-    #     validation_cluster=f'marker-{validation_marker_tag}-{validation_cluster_tag}-*.*',
-    #     calibration=f'calibration-%s-{calibration_tag}-{calibration_input_hash}.*', # blank for eye
-    #     gaze=f'gaze-%s-{gaze_tag}_{calibration_tag}-{calibration_input_hash}.*', # blank for eye
-    #     error=f'error-%s-{error_tag}_{error_input_hash}-*.npz', # blank for eye, epoch string
-    # )
     
     eye_dict = dict(left=1, right=0)
     input_file_names = dict(
@@ -725,7 +712,6 @@ def pipeline_vedb(session,
     validation_markers_clustered = []
     if validation_cluster_tag is not None:
         # Run clustering 
-        validation_markers_clustered = []
         for vm in validation_markers:
             tmp_vm = marker_clustering(
                 marker_file=vm, 
@@ -747,6 +733,7 @@ def pipeline_vedb(session,
                     eye=eye,
                     output_dir=output_dir,
                     is_verbose=is_verbose,
+                    **gpu_kwargs, # Allow inputs specific to GPU as inputs to pipeline
                     )
 
     # Computing calibration 
