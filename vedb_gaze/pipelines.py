@@ -60,7 +60,7 @@ def pupil_detection(eye_video_file,
         output_dir,
         eye='left', 
         base_output_name=None,
-        is_verbose=False):
+        is_verbose=False,
         **gpu_kwargs):
     """Run a pupil detection function as a pipeline step
     
