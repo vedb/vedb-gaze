@@ -1,0 +1,28 @@
+cluster_reduce_fn: numpy.median
+extrapolate: false
+fn: vedb_gaze.error_computation.compute_error
+lambd:
+- 1.0e-06
+- 2.9286445646252375e-06
+- 8.576958985908945e-06
+- 2.5118864315095822e-05
+- 7.356422544596421e-05
+- 0.00021544346900318845
+- 0.000630957344480193
+- 0.0018478497974222907
+- 0.0054116952654646375
+- 0.01584893192461114
+- 0.04641588833612782
+- 0.1359356390878527
+- 0.3981071705534969
+- 1.165914401179831
+- 3.414548873833601
+- 10.0
+method: tps_cv
+min_pupil_confidence: 0.40
+outlier_stds: 4
+vertical_horizontal_smooth_error_resolution:
+- 300
+- 400
+degrees_horiz: 101
+degrees_vert: 75.75
