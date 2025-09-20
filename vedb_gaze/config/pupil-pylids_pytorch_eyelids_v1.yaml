@@ -1,4 +1,4 @@
 estimate_eyelids: true
 estimate_pupils: false
 fn: pylids.analyze_video
-model_name: pytorch-eyelids-v1
+model_name: pytorch-eyelid-v1
