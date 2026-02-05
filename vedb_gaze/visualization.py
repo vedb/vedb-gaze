@@ -1842,3 +1842,49 @@ def background_fill_blocks(onoff, w=1, fcol=(.9, .9, .9), vert=False, zorder=-1,
             [ylim[0], ylim[0], ylim[1], ylim[1]],
             color=fcol, edgecolor='none', zorder=zorder)
     plt.ylim(ylim)
+
+
+# Pylids video overlay
+def pylids_label_video(fpath, eye_data, timestamps, st, fin, eye_color=(1, 0,1, 0.2), figsize=(5, 5)):
+    import file_io
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    ti = (timestamps >= st) & (timestamps <= fin)
+    frame_i, = np.nonzero(ti)
+    st_frame = frame_i[0]
+    fin_frame = frame_i[-1]
+    tmp = eye_data['ellipse'][st_frame]
+    ellipse_data = dict((k, np.array(v) / 400)
+                              for k, v in tmp.items())
+    ev = file_io.load_mp4(fpath, frames=(st_frame, fin_frame))
+    imh = ax.imshow(ev[0])
+    pupil_h = vedb_gaze.visualization.show_ellipse(ellipse_data,
+                                                       center_color=eye_color,
+                                                       facecolor=eye_color +
+                                                       (0.5,),
+                                                       ax=ax)
+    for frame in range(st_frame, fin_frame):
+        # define animation functions?
+        tmp = eye_data['ellipse'][frame]
+        ellipse_data = dict((k, np.array(v) / 400) for k, v in tmp.items()) 
+        pupil_h[0].set_center(ellipse_data_right['center'])
+        pupil_h[0].set_angle(ellipse_data_right['angle'])
+        pupil_h[0].set_height(ellipse_data_right['axes'][1])
+        pupil_h[0].set_width(ellipse_data_right['axes'][0])
+        # Accumulate? Either for hist, or only matched data.
+        pupil_h[1].set_offsets([ellipse_data_right['center']])
+
+def plot_at_times(tt, y, time_start, time_end, 
+                  time_units='seconds', ax=None, **kwargs):
+    if ax is None:
+        _, ax = plt.subplots()
+    if time_units in ('seconds', 's'):
+        multiplier = 1
+    elif time_units in ('minutes', 'm'):
+        multiplier = 60
+    st, fin = vedb_store.utils.get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
+    ax.plot(tt[st:fin] / multiplier, y[st:fin], **kwargs)
+
+
+

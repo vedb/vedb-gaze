@@ -231,9 +231,9 @@ def time_to_index(onsets_offsets, timeline, index_type='integer'):
         onsets_offsets = np.asarray(onsets_offsets)
     out = np.zeros(onsets_offsets.shape, dtype=int)
     for ct, (on, off) in enumerate(onsets_offsets):
-        i = np.flatnonzero(timeline > on)[0]
+        i = np.flatnonzero(timeline >= on)[0]
         j = np.flatnonzero(timeline < off)[-1]
-        out[ct] = [int(i), int(j)]
+        out[ct] = [int(i), int(j)+1]
     if index_type=='boolean':
         out = onoff_to_binary(out, len(timeline))
     return out
@@ -580,6 +580,7 @@ def remove_outliers(timestamps, data,
 
 def resample_data(timestamps, data, 
                       fps=120,
+                      new_time=None,
                       method='linear_interpolation',
                       remove_nans=True,
                       **kwargs):
@@ -587,10 +588,26 @@ def resample_data(timestamps, data,
     Removes outliers (< max eye image size, std > std_threshold)
     Parameters
     ==========
-    outlier_thresh : scalar
-        threshold for outliers, in stds
+    timestamps : array-like
+        timestamps associated with `data`
+    data : array-like
+        1d or 2d data to be resampled
+    fps : scalar int
+        new sampling rate (will be uniform). Ignored if `new_time` is
+        provided.
+    new_time : array-like
+        new array of timestamps, to allow manual specification. If left
+        as None, new_time will be defined as an array from min to max of
+        `timestamps` with values spaced at 1/fps 
+    method : str
+        'linear_interpolation' or 'thin-plate_spline', method for 
+        interpolation
+    remove_nans : bool
+        whether to remove any nans in data before resampling (this will
+        fill in those nans with interpolated values)
     """
-    new_time = np.arange(timestamps[0], timestamps[-1], 1/fps)
+    if new_time is None:
+        new_time = np.arange(timestamps[0], timestamps[-1], 1/fps)
     # Make 2d for some interpolators
     make_2d = method not in ('linear_interpolation',)
     if make_2d:
