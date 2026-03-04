@@ -4,6 +4,7 @@ from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
 from scipy import interpolate
 import numpy as np
 import plot_utils
+import file_io
 import copy
 import os
 
@@ -439,6 +440,20 @@ def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
     pt_h = ax.scatter(ellipse["center"][0], ellipse["center"][1], color=center_color)
     return patch_h, pt_h
 
+def _set_ellipse(ellipse_h, dot_h, ellipse, frame, eye_video_size=(1, 1)):
+    """h_s are two handles: for ellipse, for center dot
+    eye_video_size should be set to the size of the video in pixels if 
+    you want to normalize ellipse to 0-1 for plotting; default values do nothing"""
+    tmp = ellipse[frame]
+    ellipse_data = dict((k, np.array(v) / eye_video_size)
+                for k, v in tmp.items())
+    ellipse_h.set_center(ellipse_data['center'])
+    ellipse_h.set_height(ellipse_data['axes'][1])
+    ellipse_h.set_width(ellipse_data['axes'][0])
+    ellipse_h.set_angle(tmp['angle'])
+    # Accumulate?
+    dot_h.set_offsets([ellipse_data['center']])
+    return ellipse_h, dot_h
 
 def colormap_2d(
     data0,
@@ -1378,7 +1393,7 @@ def _load_gaze_plot_elements(pipeline_elements,
 
     return world_camera, eye_left_ds, eye_right_ds, pupil_left_matched, pupil_right_matched, gaze_matched, gc_video
 
-
+"""
 def make_gaze_animation(session,
                         time_idx=None,
                         frame_idx=None,
@@ -1388,13 +1403,13 @@ def make_gaze_animation(session,
                         wspace=None,
                         eye='left',
                         **pipeline_kw):
-    """Make radical gaze animation. 
+    ""Make radical gaze animation. 
     Animations can be displayed in jupyter notebooks, but this only works for short videos
     because it's very demanding on memory (all video frames must be loaded, so the length
     of the animation you can create depends on how much RAM your copmuter has. Keep it short!
     
     For longer videos, see `render_gaze_video()`
-    """
+    ""
     if not isinstance(session, (list, tuple)):
         # DELETE ME here for debugging convenience
         pipeline_elements = load_pipeline_elements(
@@ -1494,10 +1509,10 @@ def render_gaze_video(session,
                      cleanup_files=True,
                      progress_bar=None,
                      **pipeline):
-    """Render video of world camera and eyes
+    ""Render video of world camera and eyes
     
     
-    """
+    ""
     # Remove this dependency
     import vedb_store
     import file_io
@@ -1792,6 +1807,251 @@ def render_gaze_video(session,
     if cleanup_files:
         for f in files:
             f.unlink()
+"""
+
+def make_gaze_animation(paths,
+                        rect_size=(600,600),
+                        start_time=0,
+                        end_time=5,
+                        # pupil_str = 'pupil_detection-%s-pylids_eyelids_pupils_v2.npz',
+                        # gaze_str = 'gaze-%s-default_mapper-monocular_tps_cv_cluster_median_conf75_cut3std-c0eb1e655a0f58e7905b.npz',
+                        fps=30, 
+                        world_size_factor=0.25,
+                        hspace=0.1,
+                        wspace=None,
+                        eye_left_color=(1.0, 0.5, 0.0),  # orange
+                        eye_right_color=(0.0, 0.5, 1.0),  # cyan
+                        raise_error=False,
+                    ):
+    """Make radical gaze animation
+    
+    paths must contain:
+    pupil_left
+    pupil_right
+    gaze_left
+    gaze_right
+    world
+    world_timestamps
+    eye_left
+    eye_right
+    eye_timestamps_left
+    eye_timestamps_right
+
+    """
+    from matplotlib.gridspec import GridSpec
+    global eye_left_frame
+    global eye_left_image
+    global eye_right_frame    
+    global eye_right_image
+    eye_video_size = 400 # x 400, square
+    si = get_session_info(self.session)
+    
+    try:
+        pl = paths['pupil_left']
+        gl = paths['gaze_left']
+        pr = paths['pupil_right']
+        gr = paths['gaze_right']
+        include_left_eye = 'eye_left' in paths
+        include_right_eye = 'eye_right' in paths
+        
+        if include_left_eye:
+            eye_left_frame = 0
+            eye_left_time = np.load(paths['eye_timestamps_left'])
+            eye_left_vid = file_io.VideoCapture(paths['eye_left'][1])
+        if include_right_eye:
+            eye_right_frame = 0
+            eye_right_time = np.load(paths['eye_timestamps_right'])
+            eye_right_vid = file_io.VideoCapture(paths['eye_right'][1])
+        
+        _, vh, vw, _ = file_io.list_array_shapes(paths['world'][1])
+        n_frames = len(self(dict(timestamp=ses.world_time))['timestamp'])
+        #frame = world[0]
+        rect_width = rect_size[0] / vw
+        rect_height = rect_size[1] / vh
+        ar = vw / vh
+
+        fig = plt.figure(figsize=(8, 8 * 13.5/12)) #* 14 / 12))
+        gs = GridSpec(2,3, figure=fig,  hspace=hspace, wspace=wspace,
+                    height_ratios=[1, 2], width_ratios=[1, 1, 1])
+        ax_eye_left = fig.add_subplot(gs[0,0])
+        ax_eye_right = fig.add_subplot(gs[0,1])
+        ax_gc = fig.add_subplot(gs[0, 2])
+        ax_vid = fig.add_subplot(gs[1,:])
+        ax_vid.axis([0, 1, 1, 0])
+        ax_vid.set_xticks([]) # To visual field size?
+        ax_vid.set_yticks([])
+
+        # Initialize all plots
+        if gl.exists():
+            gaze_left = dict(np.load(gl))
+            gaze_rect_pixel_size = rect_size
+            # FIX ME
+            wt = ses.world_time[self.binary(ses.world_time)]
+            g_matched = utils.match_time_points(dict(timestamp=wt), gaze_left)
+            _, gaze_centered_video = wt, wv = self.load('world', 
+                                                        center=g_matched['norm_pos'],
+                                                        crop_size=gaze_rect_pixel_size)
+
+        if gr.exists():
+            gaze_right = dict(np.load(gr))
+        world_time, world = self.load('world', size=world_size_factor)
+        world_h = ax_vid.imshow(world[0], extent=[0, 1, 1, 0], aspect='auto')
+        # For now: choose best, don't rely on left.
+        if gl.exists():
+            gaze_rect_lh = gaze_rect(gaze_left['norm_pos'][0], rect_width, rect_height, ax=ax_vid, linewidth=3, edgecolor=eye_left_color)
+            gaze_dot_lh = ax_vid.scatter(*gaze_left['norm_pos'][0], c=eye_left_color)
+            gc_h = ax_gc.imshow(gaze_centered_video[0], extent=[0, 1, 1, 0])
+        else:
+            gaze_rect_lh = gaze_rect([-1,-1], rect_width, rect_height, ax=ax_vid, linewidth=3)
+            gaze_dot_lh = ax_vid.scatter(*[-1,-1], c='black')
+            gc_h = ax_gc.imshow(np.zeros((200,200)), extent=[0, 1, 1, 0])
+
+        if gr.exists():
+            gaze_rect_rh = gaze_rect(gaze_right['norm_pos'][0], rect_width, rect_height, ax=ax_vid, linewidth=3, edgecolor=eye_right_color)
+            gaze_dot_rh = ax_vid.scatter(*gaze_right['norm_pos'][0], c=eye_right_color)
+            #gc_h = ax_gc.imshow(gaze_centered_video[0], extent=[0, 1, 1, 0])
+        else:
+            gaze_rect_rh = gaze_rect([-1,-1], rect_width, rect_height, ax=ax_vid, linewidth=3)
+            gaze_dot_rh = ax_vid.scatter(*[-1,-1], c='black')
+            #gc_h = ax_gc.imshow(np.zeros((200,200)), extent=[0, 1, 1, 0])
+
+            
+        if include_left_eye:
+            success, eye_left_image = eye_left_vid.VideoObj.read()
+            eye_left_h = ax_eye_left.imshow(eye_left_image, extent=[0, 1, 1, 0])
+            
+        if pl.exists():
+            pupil_left = dict(np.load(pl, allow_pickle=True))
+            ellipse_data_left = dict((k, np.array(v) / eye_video_size)
+                                    for k, v in pupil_left['ellipse'][0].items())
+            pupil_left_eh, pupil_left_dh = show_ellipse(ellipse_data_left,
+                                    center_color=eye_left_color,
+                                    facecolor=eye_left_color +
+                                    (0.5,),
+                                    ax=ax_eye_left)
+
+        if include_right_eye:
+            success, eye_right_image = eye_right_vid.VideoObj.read()
+            eye_right_h = ax_eye_right.imshow(eye_right_image, extent=[0, 1, 1, 0])
+            
+        if pr.exists():
+            pupil_right = dict(np.load(pr, allow_pickle=True))
+            ellipse_data_right = dict((k, np.array(v) / eye_video_size)
+                                    for k, v in pupil_right['ellipse'][0].items())
+            pupil_right_eh, pupil_right_dh = show_ellipse(ellipse_data_right,
+                                    center_color=eye_right_color,
+                                    facecolor=eye_right_color +
+                                    (0.5,),
+                                    ax=ax_eye_right)
+            
+        ax_eye_left.axis([1, 0, 1, 0]) # [0,1, 0, 1]
+        ax_eye_left.set_xticks([])
+        ax_eye_left.set_yticks([])
+        
+        ax_eye_right.axis([0, 1, 0, 1]) #[1, 0, 1, 0]
+        ax_eye_right.set_xticks([])
+        ax_eye_right.set_yticks([])
+
+        
+        gaze_box_vis_degrees = si['fov'] * rect_width
+        vmx_deg = gaze_box_vis_degrees / 2
+        tick_labels = ['%.1f'%x for x in [-vmx_deg, 0, vmx_deg]]
+        ax_gc.set_xticks([0, 0.5, 1])
+        ax_gc.set_xticklabels(tick_labels)
+        ax_gc.set_yticks([0, 0.5, 1])
+        ax_gc.set_yticklabels(tick_labels)
+        ax_gc.grid('on', linestyle=':', color=(0.95, 0.85, 0))
+        #plt.close(fig)
+        
+
+        def init():
+            to_return = [world_h]
+            world_h.set_array(np.zeros_like(world[0]))
+            
+            if gl.exists():
+                gaze_rect_lh.set_xy([0.5, 0.5] - np.array([rect_width/2, rect_height/2]))
+                gaze_dot_lh.set_offsets([0.5, 0.5])
+                gc_h.set_array(np.zeros_like(gaze_centered_video[0]))
+                to_return.extend([gaze_rect_lh, gaze_dot_lh, gc_h])
+            
+            if include_left_eye:
+                eye_left_h.set_array(np.zeros((400,400), dtype=np.uint8))
+                to_return.append(eye_left_h)
+                
+            if pl.exists():
+                _ = _set_ellipse(pupil_left_eh, pupil_left_dh,
+                                 pupil_left['ellipse'], 0, eye_video_size=eye_video_size)
+                to_return.extend([pupil_left_eh, pupil_left_dh])
+                
+            if include_right_eye:
+                eye_right_h.set_array(np.zeros((400,400), dtype=np.uint8)) #np.zeros_like(eye_right_ds[0]))
+                to_return.append(eye_right_h)
+                
+            if pr.exists():
+                _ = _set_ellipse(pupil_right_eh, pupil_right_dh,
+                                 pupil_right['ellipse'], 0, eye_video_size=eye_video_size)
+                to_return.extend([pupil_right_eh, pupil_right_dh])
+            
+            return to_return
+
+        def animate(i):
+            global eye_left_frame
+            global eye_right_frame
+            global eye_right_image
+            global eye_left_image
+            #success, world_im = world_vid.VideoObj.read()
+            world_h.set_data(world[i]) # world_im)
+            world_time_this_frame = world_time[i]
+            to_return = [world_h]
+            
+            
+            if include_left_eye:
+                while eye_left_time[eye_left_frame] < world_time_this_frame:
+                    eye_left_frame += 1
+                    success, eye_left_image = eye_left_vid.VideoObj.read()
+                eye_left_h.set_data(eye_left_image)
+                to_return.append(eye_left_h)
+            if pl.exists():
+                _ = _set_ellipse(pupil_left_eh, pupil_left_dh,
+                                 pupil_left['ellipse'], eye_left_frame, eye_video_size=eye_video_size)
+                to_return.extend([pupil_left_eh, pupil_left_dh])
+            if include_right_eye:
+                while eye_right_time[eye_right_frame] < world_time_this_frame:
+                    eye_right_frame += 1
+                    success, eye_right_image = eye_right_vid.VideoObj.read()
+                eye_right_h.set_data(eye_right_image)
+                to_return.append(eye_right_h)
+            if pr.exists():
+                _ = _set_ellipse(pupil_right_eh, pupil_right_dh,
+                                 pupil_right['ellipse'], eye_right_frame, eye_video_size=eye_video_size)
+                to_return.extend([pupil_right_eh, pupil_right_dh])
+
+            if gl.exists():
+                gaze_rect_lh.set_xy(gaze_left['norm_pos'][eye_left_frame] - np.array([rect_width/2, rect_height/2]))
+                gaze_dot_lh.set_offsets(gaze_left['norm_pos'][eye_left_frame])
+                try:
+                    gc_h.set_data(gaze_centered_video[i])
+                except:
+                    pass
+                to_return.extend([gaze_rect_lh, gaze_dot_lh, gc_h])
+                
+            if gr.exists():
+                gaze_rect_rh.set_xy(gaze_right['norm_pos'][eye_right_frame] - np.array([rect_width/2, rect_height/2]))
+                gaze_dot_rh.set_offsets(gaze_right['norm_pos'][eye_right_frame])
+                to_return.extend([gaze_rect_rh, gaze_dot_rh])
+
+            
+            return to_return
+
+
+
+        anim = animation.FuncAnimation(fig, animate, init_func=init, frames=n_frames, interval=1/fps * 1000, blit=True)
+    except:
+        eye_left_vid.VideoObj.release()
+        eye_right_vid.VideoObj.release()
+        raise
+    return anim
+
 
 def show_session(folder, 
                 n_frames=4, 
@@ -1844,36 +2104,58 @@ def background_fill_blocks(onoff, w=1, fcol=(.9, .9, .9), vert=False, zorder=-1,
     plt.ylim(ylim)
 
 
+
 # Pylids video overlay
-def pylids_label_video(fpath, eye_data, timestamps, st, fin, eye_color=(1, 0,1, 0.2), figsize=(5, 5)):
-    import file_io
+def label_eye_video(eye_video_file, eye_data, st=0, fin=None, eye_alpha=0.2,eye_color=(1, 0, 1), eyelid_data=None, eye_timestamp_file=None, figsize=(5, 5)):
+    """Assumes eye_video_file and eye_data have same timestamps
+    
+    st and fin are times in seconds starting from 0 (at start of video)
+    """
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
-    
-    ti = (timestamps >= st) & (timestamps <= fin)
+    # Load time
+    if eye_timestamp_file is None:
+        timestamps = eye_data['timestamps']
+    else:
+        timestamps = np.load(eye_timestamp_file)
+    if fin is None:
+        fin = timestamps[-1]
+    # Get frame 
+    ti = (timestamps >= st) & (timestamps < fin)
     frame_i, = np.nonzero(ti)
     st_frame = frame_i[0]
     fin_frame = frame_i[-1]
-    tmp = eye_data['ellipse'][st_frame]
-    ellipse_data = dict((k, np.array(v) / 400)
-                              for k, v in tmp.items())
-    ev = file_io.load_mp4(fpath, frames=(st_frame, fin_frame))
-    imh = ax.imshow(ev[0])
-    pupil_h = vedb_gaze.visualization.show_ellipse(ellipse_data,
-                                                       center_color=eye_color,
-                                                       facecolor=eye_color +
-                                                       (0.5,),
-                                                       ax=ax)
-    for frame in range(st_frame, fin_frame):
-        # define animation functions?
-        tmp = eye_data['ellipse'][frame]
-        ellipse_data = dict((k, np.array(v) / 400) for k, v in tmp.items()) 
-        pupil_h[0].set_center(ellipse_data_right['center'])
-        pupil_h[0].set_angle(ellipse_data_right['angle'])
-        pupil_h[0].set_height(ellipse_data_right['axes'][1])
-        pupil_h[0].set_width(ellipse_data_right['axes'][0])
-        # Accumulate? Either for hist, or only matched data.
-        pupil_h[1].set_offsets([ellipse_data_right['center']])
+    # Get video object
+    eye_vid = file_io.load_mp4(eye_video_file)
+    eye_vid.set_frame(st_frame)
+    success, eye_image = eye_vid.VideoObj.read()
+    eye_vid.set_frame(st_frame)
+    # Set up plot
+    imh = ax.imshow(eye_image, extent=[0, 1, 1, 0])
+    ell_h, pt_h = show_ellipse(ellipse_data,
+                            center_color=eye_color + (1.0,),
+                            facecolor=eye_color + (eye_alpha,),
+                            ax=ax)
+    def init():
+        imh.set_array(np.zeros_like(eye_image))
+        _ = _set_ellipse(ell_h, pt_h, eye_data['ellipse'], st_frame, eye_video_size=eye_image.shape[:2])
+        to_return = [imh, ell_h, pt_h]
+        # if eyelid_data is not None:
+        #    # Initialize eyelid plots
+        return to_return
+    
+    def animate(i):
+        # Update
+        success, eye_image = eye_vid.VideoObj.read()
+        assert success, "Could not read eye video frame"
+        imh.set_data(eye_image)
+        _ = _set_ellipse(ell_h, pt_h, eye_data['ellipse'], frame_i[i], eye_video_size=eye_image.shape[:2])
+        to_return = [imh, ell_h, pt_h]
+        # if eyelid_data is not None:
+        #    # Update eyelid plots
+        return to_return
+    anim = animation.FuncAnimation(fig, animate, init_func=init, frames=n_frames, interval=1/fps * 1000, blit=True)
+    return anim
 
 def plot_at_times(tt, y, time_start, time_end, 
                   time_units='seconds', ax=None, **kwargs):
