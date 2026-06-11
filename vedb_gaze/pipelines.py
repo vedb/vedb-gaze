@@ -636,6 +636,9 @@ def pipeline_vedb(session,
     input_dir = input_base.expanduser() / session
     # Output folder - For now, assume output to separate folder structure from input 
     output_dir = output_base.expanduser() / session
+    if not output_dir.exists():
+        print('output_dir does not exist. Creating output_dir... ', str(output_dir))
+        output_dir.mkdir()
     # gpu keyword arg handling: 
     if gpu_kwargs is None:
         gpu_kwargs = {}
