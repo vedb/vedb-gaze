@@ -6,15 +6,18 @@ import file_io
 import os
 import pathlib
 import hashlib
+import copy
 
 from . import utils
 from .options import config
 from .calibration import Calibration
 
 
+# Directory with eye videos, world videos, marker time, etc.
 BASE_DIR = pathlib.Path(config.get('paths', 'base_dir')).expanduser()
-PYDRA_OUTPUT_DIR = pathlib.Path(config.get('paths', 'pydra_cache') ).expanduser()
-BASE_OUTPUT_DIR = pathlib.Path(config.get('paths', 'output_dir') ).expanduser()
+# Directory for estimated gaze outputs (pupil estimates, gaze estimates, calibrations, etc)
+PROC_DIR = pathlib.Path(config.get('paths', 'proc_dir') ).expanduser()
+# Directory for saved sets of input arguments for functions
 PARAM_DIR = pathlib.Path(os.path.split(__file__)[0]) / 'config'
 
 # TODO: put these in a config file
@@ -116,6 +119,48 @@ def pupil_detection(eye_video_file,
     else:
         np.savez(fpath, **data)
         return fpath
+
+def detrend_pupil(
+                pupil_file,
+                eyelid_file,
+                param_tag,
+                eye,
+                base_output_name=None,
+                is_verbose=False,
+                ):
+    # assure `output_dir` is a pathlib object
+    output_dir = pathlib.Path(output_dir)
+    # Check for extant file / failed run
+    if base_output_name is None:
+        fpath = output_dir / f'pupil_detrended-{eye}-{param_tag}.npz'
+    else:
+        fpath = output_dir / f'{base_output_name}_pupil_detrended-{eye}-{param_tag}.npz'
+    fpath_fail = output_dir / (fpath.name.replace('.npz', 'failed'))
+    if fpath.exists():
+        return fpath
+    if fpath_fail.exists():
+        return fpath_fail
+    if is_verbose:
+        print("\n=== Finding pupil locations ===\n")    
+    # Load parameters from stored yaml files
+    param_fpath = PARAM_DIR / f'detrend_pupil-{param_tag}.yaml'
+    kwargs = utils.read_yaml(param_fpath)
+    fn = kwargs.pop('fn')
+    # convert `fn` string to callable function
+    func = utils.get_function(fn)
+    # Call function
+    data = func(pupil_file, eyelid_file, **kwargs,)
+    # Detect failure
+    failed = len(data['norm_pos']) == 0
+    # Outputs
+    if failed:
+        # if failed, save empty text file
+        fpath_fail.open(mode='w')
+        return fpath_fail
+    else:
+        np.savez(fpath, **data)
+        return fpath
+
 
 
 def marker_detection(video_file,
@@ -555,7 +600,8 @@ def check_files(output_dir, template, key_list=None):
 
 ### --- Workflows --- ###
 def pipeline_vedb(session,
-                  pupil_tag='pylids_pupils_eyelids_v2',
+                  pupil_tag='pylids_pytorch_pupils_v1',
+                  eyelid_tag='pylids_pytorch_eyelids_v1',
                   pupil_detrend_tag=None,
                   calibration_marker_tag='circles_halfres',
                   calibration_split_tag=None,
@@ -568,7 +614,7 @@ def pipeline_vedb(session,
                   error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
                   calibration_epoch=0,
                   input_base=BASE_DIR,
-                  output_base=PYDRA_OUTPUT_DIR,
+                  output_base=PROC_DIR,
                   is_verbose=False,
                   gpu_kwargs=None,
                   ):
@@ -592,6 +638,9 @@ def pipeline_vedb(session,
     input_dir = input_base.expanduser() / session
     # Output folder - For now, assume output to separate folder structure from input 
     output_dir = output_base.expanduser() / session
+    if not output_dir.exists():
+        print('output_dir does not exist. Creating output_dir... ', str(output_dir))
+        output_dir.mkdir()
     # gpu keyword arg handling: 
     if gpu_kwargs is None:
         gpu_kwargs = {}
@@ -603,10 +652,10 @@ def pipeline_vedb(session,
     else:
         calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
-                                       pupil_tag, pupil_detrend_tag] if x is not None]
+                                       pupil_tag, eyelid_tag, pupil_detrend_tag] if x is not None]
         error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
-                                       pupil_tag, pupil_detrend_tag, \
+                                       pupil_tag, eyelid_tag, pupil_detrend_tag, \
                                        calibration_tag, gaze_tag,
                                        validation_marker_tag, validation_split_tag, validation_cluster_tag, \
                                        ] if x is not None]                                       
@@ -735,6 +784,36 @@ def pipeline_vedb(session,
                     is_verbose=is_verbose,
                     **gpu_kwargs, # Allow inputs specific to GPU as inputs to pipeline
                     )
+    pupil_input = copy.deepcopy(pupils)
+
+    ## Eyelid detection
+    eyelids = {}
+    if eyelid_tag is not None:
+        for eye in ['left','right']:
+            eyelids[eye] = pupil_detection(
+                    eye_video_file=input_file_names['eye_video_file'][eye],
+                    eye_time_file=input_file_names['eye_time_file'][eye],
+                    param_tag=eyelid_tag,
+                    eye=eye,
+                    output_dir=output_dir,
+                    is_verbose=is_verbose,
+                    **gpu_kwargs, # Allow inputs specific to GPU as inputs to pipeline
+                    )
+            
+    pupil_detrend = {}
+    if pupil_detrend_tag is not None:
+        for eye in ['left', 'right']:
+            pupil_detrend = detrend_pupil(
+                pupils[eye],
+                eyelids[eye],
+                param_tag=pupil_detrend_tag,
+                eye=eye,
+                output_dir=output_dir,
+                is_verbose=is_verbose,
+                )
+        pupil_input = copy.deepcopy(pupil_detrend)
+    
+    
 
     # Computing calibration 
     calibration_out = {}
@@ -746,7 +825,7 @@ def pipeline_vedb(session,
             # Run 
             calibration_out['both'] = compute_calibration(
                 marker_file=calibration_markers_clustered,
-                pupil_files=[pupils['left'], pupils['right']],
+                pupil_files=[pupil_input['left'], pupil_input['right']],
                 input_hash=calibration_input_hash,
                 param_tag=calibration_tag,
                 video_dimensions=video_dimensions,
@@ -758,7 +837,7 @@ def pipeline_vedb(session,
             for eye in ['left','right']:
                 calibration_out[eye] = compute_calibration(
                     marker_file=calibration_markers_clustered,
-                    pupil_files=pupils[eye],
+                    pupil_files=pupil_input[eye],
                     input_hash=calibration_input_hash,
                     param_tag=calibration_tag,
                     video_dimensions=video_dimensions,
@@ -779,9 +858,9 @@ def pipeline_vedb(session,
             eyes = ['both']
         for eye in eyes:
             if eye == 'both':
-                pupil_files = [pupils['left'],pupils['right']]
+                pupil_files = [pupil_input['left'],pupil_input['right']]
             else:
-                pupil_files = pupils[eye]
+                pupil_files = pupil_input[eye]
             gaze[eye] = map_gaze(
                 pupil_files=pupil_files,
                 calibration_file=calibration_out[eye],
@@ -815,7 +894,7 @@ def pipeline_vedb(session,
                     is_verbose=is_verbose,)
                 error[eye].append(tmp_e)
 
-    return dict(pupils=pupils, calibration_markers=calibration_markers, calibration_markers_clustered=calibration_markers_clustered,
+    return dict(pupils=pupils, pupil_detrend=pupil_detrend, calibration_markers=calibration_markers, calibration_markers_clustered=calibration_markers_clustered,
                 validation_markers=validation_markers, validation_markers_clustered=validation_markers_clustered, calibration=calibration_out, gaze=gaze, error=error)
 """
 # Inputs: 

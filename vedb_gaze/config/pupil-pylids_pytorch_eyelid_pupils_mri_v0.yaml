@@ -1,0 +1,4 @@
+estimate_eyelids: true
+estimate_pupils: true
+fn: pylids.analyze_video
+model_name: pytorch-eyelid_pupil-mri_v0
