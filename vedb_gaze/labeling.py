@@ -14,7 +14,7 @@ from scipy.signal import savgol_filter
 from scipy.stats import zscore
 from sklearn.decomposition import PCA
 
-from .utils import onoff_from_binary
+from .utils import onoff_from_binary, time_to_index, resample_data
 # Need functions to: 
 # Smooth (just for gaze) w/ awareness of noise frequency bandwidth
 # Resample
@@ -27,65 +27,36 @@ from .utils import onoff_from_binary
 try:
     # Eyelid distance will require this.
     import pylids
+    has_pylids = True
 except ImportError:
     print('No pylids. please install.')
+    has_pylids = False
     pass
 
 # Basics
 
-def resample_data(timestamps, data, 
-                      fps=120,
-                      method='linear_interpolation',
-                      remove_nans=True,
-                      **kwargs):
-    """
-    Removes outliers (< max eye image size, std > std_threshold)
+def buffer_onoff(onoff, buffer_time):
+    """Take list of onsets and offsets and add time before and after
 
     Parameters
     ----------
-    timestamps : array
-        array of times associated with `data` array
-        These are the timestamps you WANT the data to have.
-    data : array
-        values to be resampled (the 'y' or dependent values
-        to the `timestamps`' 'x'). May be 1d or 2d array, 
-        first dimension must match `timestamps`
-    outlier_thresh : scalar
-        threshold for outliers, in stds
+    onoff: array-like
+        array or list with tuples, each row (or item of list) should be
+        (onset, offset, duration)
+    buffer time : scalar, array-like
+        if scalar, same `buffer_time` is added before onsets & after offsets
+        if tuple, list, or array, should be 2 long, with separate values
+        for pre-onset and post-offset buffers
+
     """
-    new_time = np.arange(timestamps[0], timestamps[-1], 1/fps)
-    # Make 2d for some interpolators
-    make_2d = method not in ('linear_interpolation',)
-    if make_2d:
-        if np.ndim(data) < 2:
-            inpt = data.reshape(-1, 1)
-        else:
-            inpt = data
-        t = timestamps.reshape(-1, 1)
-        new_time = new_time.reshape(-1, 1)
+    if isinstance(buffer_time, (list, tuple)):
+        pre, post = buffer_time
     else:
-        inpt = data
-        t = timestamps
-
-    if remove_nans:
-        # Remove nans
-        if np.ndim(inpt) > 1:
-            keep = ~np.any(np.isnan(inpt), axis=1)
-        else:
-            keep = ~np.isnan(inpt)
-        t = t[keep]
-        inpt = inpt[keep]
-
-    if method == 'linear_interpolation':
-        interp = scipy.interpolate.interp1d(t, inpt, axis=0)
-    elif method == 'thin-plate_spline':
-        if not 'neighbors' in kwargs:
-            print("Hint: this runs much faster with neighbors=7 or some low number")
-        interp = scipy.interpolate.RBFInterpolator(t, inpt, **kwargs)
-    else:
-        raise NotImplementedError(f"Method {method} not available!")
-    data_out = interp(new_time)
-    return new_time, data_out
+        pre = post = buffer_time
+    out = []
+    for on, off, duration in onoff:
+        out.append([on-pre, off+post, duration+pre+post])
+    return np.asarray(out)
 
 def remove_outliers(timestamps, data, 
                     z_max=4,
@@ -182,6 +153,8 @@ def assure_positive(pca, verbose=False):
 def get_major_minor_axes_pca(pupil_data, n_points=1000, assure_positive_pcs=True):
     """Estimates PCA to compute major and minor axes of the eye across all frames
     """
+    if not has_pylids:
+        raise ImportError("No pylids module, please install.")
     idx = np.linspace(0, len(pupil_data['dlc_kpts_x']), n_points, endpoint=False).astype(int)
     pca_data = [] # np.zeros((2 * int(np.floor(len(pupil_data['dlc_kpts_x']) / nth)), 2))
     for i in idx:
@@ -247,9 +220,9 @@ def get_eyelid_distance(pupil_data,
                            progress_bar=tqdm.notebook.tqdm,
                           ):
     """TODO: docstring
-
     """
-    
+    if not has_pylids:
+        raise ImportError("No pylids module, please install.")    
     
     if save_fits:
         fits = dict(x=[],
@@ -271,6 +244,10 @@ def get_eyelid_distance(pupil_data,
         x = pupil_data['dlc_kpts_x'][j]
         y = pupil_data['dlc_kpts_y'][j]
         c = pupil_data['dlc_confidence'][j]
+        if x.shape[0] == 48:
+            pupil_model_type = 'eyelid_pupil'
+        elif x.shape[0] == 32:
+            pupil_model_type = 'eyelid'
         if align_eye_pca:
             # rotate eyelid keypoints but maintain original mean, to maintain valid
             # assumptions (we hope) about x and y range
@@ -278,7 +255,7 @@ def get_eyelid_distance(pupil_data,
         else:
             x_, y_ = x, y
         x_viz_eye, fit_eye_up, fit_eye_lo, corners_x, coefs_up, coefs_lo = \
-            pylids.fit_eyelid(x_, y_, c, return_full_eyelid=True, model_type='eyelid')
+            pylids.fit_eyelid(x_, y_, c, return_full_eyelid=True, model_type=pupil_model_type)
         if save_fits:
             fits['x'].append(x_viz_eye)
             fits['y_upper_coef'].append(coefs_up)
@@ -317,8 +294,8 @@ def _detect_blinks_eyevel(dist_eyelid,
     min_eye_opening_time = 30,
     min_full_blink_time = 16,
     max_full_blink_time = 500,
-    negative_velocity_threshold=negative_velocity_threshold,
-    positive_velocity_threshold=positive_velocity_threshold,
+    negative_velocity_threshold=-2.4,
+    positive_velocity_threshold=2.4,
     ): 
     """
     Note: All parameter times in milliseconds
@@ -326,7 +303,11 @@ def _detect_blinks_eyevel(dist_eyelid,
     # Z-score and scale resulting range to -1 to 1
     # eyelid_velocity = pylids.filter_scale_blinks(dist_eyelid)
     # ... or just compute gradient
-    eyelid_velocity = np.gradient(dist_eyelid)
+    # eyelid_velocity is expressed in fraction of max eye change 
+    # per second
+    if dist_eyelid.max() > 1:
+        dist_eyelid = dist_eyelid / dist_eyelid.max()
+    eyelid_velocity = np.gradient(dist_eyelid) / (1/fps)
     pred_blink_labels = np.zeros((len(eyelid_velocity),))
     blink_label = 1
     i = 0
@@ -380,8 +361,8 @@ def detect_blinks(pupil_data,
                   min_eye_opening_time = 30,
                   min_full_blink_time = 16,
                   max_full_blink_time = 500,
-                  negative_velocity_threshold=-0.02,
-                  positive_velocity_threshold=0.02,
+                  negative_velocity_threshold=-2.4, # fraction of eye per second #-0.02,
+                  positive_velocity_threshold=2.4, # fraction of eye per second #0.02,
                   absolute_max_distance = 400,
                   outlier_z_max=4,
                   max_eye_opening=None,
@@ -445,11 +426,9 @@ def detect_blinks(pupil_data,
 
 def detect_blinks_confidence(pupil_data,
                   fps=120,
-                  min_confidence = None,
-                  min_full_blink_time = 16,
-                  max_full_blink_time = 500,
-                  negative_velocity_threshold=None,
-                  positive_velocity_threshold=None,
+                  min_confidence = 0.7,
+                  min_full_blink_time = 16 / 1000,
+                  max_full_blink_time = 500 / 1000,
                   idx=None
                  ):
     """
@@ -457,7 +436,6 @@ def detect_blinks_confidence(pupil_data,
     All closing, opening, blink times in ms
     velocity should be converted to % closure / second
 
-    THIS IS WIP DO NOT USE
     """
     # Fixed parameters
     resampling_method = 'thin-plate_spline'
@@ -471,6 +449,7 @@ def detect_blinks_confidence(pupil_data,
         ts = ts[idx]
         conf = conf[idx]
     if min_confidence is None:
+        # I think this shoudl be 2 stds below mean...
         min_confidence = np.median(conf) - np.std(conf)
     # Resample with slight smoothing in time by thin-plate spline smoothing spline
     ts_, conf_ = resample_data(ts, conf, fps=fps, 
@@ -496,7 +475,7 @@ def detect_blinks_confidence(pupil_data,
     blinks_out = []
     for on, off, duration in blink_times_resampled_time:
         # Convert to ms
-        dur = duration * 1000
+        dur = duration #* 1000
         if (dur > min_full_blink_time) & (dur < max_full_blink_time):
             blinks_out.append((on, off, duration))
     return dict(timestamp=ts_,
@@ -753,7 +732,7 @@ def plot_blinks(blinks,
     duration_idx = np.argsort(blinks['blinks_onoff'][:,2])
     blink_time = blink_time[duration_idx]
     duration = blink_time[:, 2]
-    bi = vedb_gaze.utils.time_to_index(blink_time[:,:2], blinks['timestamp']).astype(int)
+    bi = time_to_index(blink_time[:,:2], blinks['timestamp']).astype(int)
     # Sort by closure
     # To come
     # Normalization
@@ -770,7 +749,28 @@ def plot_blinks(blinks,
     ax.set_xlabel("Time (s)")
     plot_utils.set_ax_fontsz(ax, lab=11, tk=9, name='Helvetica')        
 
-
+def buffer_onoff(onoff, buffer_time):
+    """Take list of onsets and offsets and add time before and after
+    
+    Parameters
+    ----------
+    onoff: array-like
+        array or list with tuples, each row (or item of list) should be
+        (onset, offset, duration)
+    buffer time : scalar, array-like
+        if scalar, same `buffer_time` is added before onsets & after offsets
+        if tuple, list, or array, should be 2 long, with separate values
+        for pre-onset and post-offset buffers
+    
+    """
+    if isinstance(buffer_time, (list, tuple)):
+        pre, post = buffer_time
+    else:
+        pre = post = buffer_time
+    out = []
+    for on, off, duration in onoff:
+        out.append([on-pre, off+post, duration+pre+post])
+    return np.asarray(out)
 
 def detrend_median(data, fps=45, window_seconds=20, impute_mean=(0.5, 0.5)):
     """Perform median detrending on data

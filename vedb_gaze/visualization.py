@@ -3,14 +3,19 @@ from matplotlib import animation, patches, colors, gridspec
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
 from scipy import interpolate
 import numpy as np
-import plot_utils
-import file_io
+import pathlib
 import copy
 import os
 
+import plot_utils
+import file_io
+from .options import config
 from .marker_parsing import marker_cluster_stat, split_timecourse
 from .utils import load_pipeline_elements,  match_time_points
 from . import calibration as vedbcalibration
+
+BASE_DIR = pathlib.Path(config.get('paths','base_dir'))
+PROC_DIR = pathlib.Path(config.get('paths','proc_dir'))
 
 # Colors for clusters
 np.random.seed(107)
@@ -206,12 +211,12 @@ def plot_eye_at_marker(session, marker, pupils,
     # session = marker.session
     #pupils.db_load()
     #eye = pupils.eye
-    eye_id = _use_data(pupils)['id'][0]
+    eye_id = pupils['id'][0]
     eye = ['right','left'][eye_id]
     if ax is None:
         fig, ax = plt.subplots()
         fig.patch.set_color('w')
-    clustered = copy.deepcopy(_use_data(marker))
+    clustered = copy.deepcopy(marker)
     if 'marker_cluster_index' not in clustered:
         n_pts = len(clustered['timestamp'])
         clustered['marker_cluster_index'] = np.floor(
@@ -238,7 +243,7 @@ def plot_eye_at_marker(session, marker, pupils,
         ct[0], ct[0]+1, eye_time)[0] for ct in cluster_times_all]
     eye_frames_fin = [vedb_store.utils.get_frame_indices(
         ct[1], ct[1]+1, eye_time)[0] for ct in cluster_times_all]
-    pupil_conf = _use_data(pupils)['confidence']
+    pupil_conf = pupils['confidence']
     #print(pupil_conf.shape)
     cluster_confidence = [np.median(pupil_conf[st:fin])
                           for st, fin in zip(eye_frames_st, eye_frames_fin)]
@@ -505,7 +510,7 @@ def show_dots(mk, start=0, end=10, size=0.25, fps=30, video='world_camera', accu
     vtime, vdata = mk.session.load(video, time_idx=(start, end), size=size)
     anim = make_dot_overlay_animation(vdata,
                                       vtime + mk.session.start_time,
-                                      _use_data(mk),
+                                      mk,
                                       fps=fps,
                                       accumulate=accumulate,
                                       **kwargs,
@@ -703,7 +708,7 @@ def plot_error_markers(markers, gaze,
     ax.axis([0, 1, 1, 0])
 
 
-def load_markers(markers, session, fn=np.nanmedian, clusters=None, crop_size=(128, 128), tdelta=0.5):
+def load_markers(markers, video_fpath, fn=np.nanmedian, clusters=None, crop_size=(128, 128), tdelta=0.5):
     mk_cut = marker_cluster_stat(markers, 
                                  fn=fn,
                                  clusters=clusters,
@@ -713,9 +718,8 @@ def load_markers(markers, session, fn=np.nanmedian, clusters=None, crop_size=(12
     marker_positions = mk_cut['norm_pos']
     marker_crops = []
     for mk_pos, mk_t in zip(marker_positions, marker_times):
-        _, wv = session.load('world_camera',
-                                time_idx=(mk_t - session.start_time,
-                                        mk_t - session.start_time + tdelta),
+        wv = file_io.load_video(video_fpath,
+                                time_idx=(mk_t, mk_t + tdelta),
                                 size=crop_size,
                                 crop_size=crop_size,
                                 center=mk_pos,
@@ -725,14 +729,18 @@ def load_markers(markers, session, fn=np.nanmedian, clusters=None, crop_size=(12
     return marker_positions, marker_times, marker_crops
 
 
-def show_clustered_markers(markers, session, fn=np.nanmedian, clusters=None, 
+def show_clustered_markers(markers, folder, fn=np.nanmedian, clusters=None, 
                            crop_size=(128, 128), tdelta=0.25, ax=None, n_blocks=12, imsz=0.15):
     if (clusters is None) and ('marker_cluster_index' not in markers):
         n_pts = len(markers['norm_pos'])
         clusters = np.floor(
             np.linspace(0, n_blocks, n_pts, endpoint=False))
+    if isinstance(folder, pathlib.Path):
+        video_fpath = folder
+    else:
+        video_fpath = BASE_DIR / folder
     mk_pos, mk_times, mk_frames = load_markers(markers, 
-                                               session, fn=fn,
+                                               video_fpath, fn=fn,
                                                clusters=clusters, 
                                                crop_size=crop_size,
                                                tdelta=tdelta)
@@ -787,59 +795,31 @@ def plot_error_interpolation_surface(marker, gaze_err, xgrid, ygrid, gaze_err_im
     plot_utils.set_ax_fontsz(ax, lab=12, tk=11, name='Helvetica')
 
 
-def _ses_chk(a, b):
-    if isinstance(a, str):
-        if isinstance(b, str):
-            return a==b
-        else:
-            return a == b._id
-    else:
-        if isinstance(b, str):
-            return a._id == b
-        else:
-            return a._id == b._id
-
-def _use_data(x):
-    """Lazy function to enable passing of dicts or vedb_store objects"""
-    if isinstance(x, dict):
-        return x
-    elif hasattr(x, 'data'):
-        return x.data
-    else:
-        raise ValueError(
-            'You must provide a vedb_store class or a dictionary!')
-
-def _get_timestamp(x, session):
-    """Lazy function to get normalized time from dicts + session"""
-    if isinstance(x, dict):
-        return x['timestamp'] - session.start_time
-    elif hasattr(x, 'timestamp'):
-        return x.timestamp
-
-def plot_session_qc(session, 
-                    pupil=None,
-                    calibration_marker_all=None,
-                    calibration_marker_filtered=None, 
-                    calibration=None, 
-                    validation_marker_all=None,
-                    validation_marker_filtered=None, 
-                    gaze=None,
-                    error=None,
-                    do_slow_plots = False,
-                    axs=None, 
-                    fig_scale=14,
-                    val_color = (0.9, 0.0, 0.0),
-                    val_color_lt = (0.9, 0.5, 0.5),
-                    cal_color = (0.0, 0.9, 0.0),
-                    cal_color_lt = (0.5, 0.9, 0.5),
-                    font_kw=None,
-                    fpath=None,
-                    close_figure=False,
-                    pupil_confidence_threshold = 0.7,
-                    calibration_marker_epoch=0,
-                    validation_marker_epoch=0,
-                    do_memory_cleanup=False,
-                   ):
+def plot_session_qc(folder, 
+        video_fpath=None,
+        pupil=None,
+        calibration_marker=None,
+        calibration_cluster=None, 
+        calibration=None, 
+        validation_marker=None,
+        validation_cluster=None, 
+        gaze=None,
+        error=None,
+        do_slow_plots = False,
+        axs=None, 
+        fig_scale=14,
+        val_color = (0.9, 0.0, 0.0),
+        val_color_lt = (0.9, 0.5, 0.5),
+        cal_color = (0.0, 0.9, 0.0),
+        cal_color_lt = (0.5, 0.9, 0.5),
+        font_kw=None,
+        fpath=None,
+        close_figure=False,
+        pupil_confidence_threshold = 0.7,
+        calibration_marker_epoch=0,
+        validation_marker_epoch=0,
+        do_memory_cleanup=False,
+        ):
     """Make quality control plot for VEDB session
 
     Parameters
@@ -852,13 +832,13 @@ def plot_session_qc(session,
         output by vedb_gaze.pupil_detection_pl.detect_pupils() or 
         a PupilDetection class returned from the `vedb_store` database.
         by default None
-    calibration_marker_all : dict or vedb_store.MarkerDetection class, optional
+    calibration_marker : dict or vedb_store.MarkerDetection class, optional
         output of calibration marker detection, either a dict (directly from output
         of vedb_gaze.marker_detection.detect_<marker> function) or a class loaded
         from vedb_store database. Must contain 'norm_pos' field with normalized (0-1)
         locations of detected markers and 'timestamp' field with timestamps.
         by default None
-    calibration_marker_filtered : dict or vedb_store.MarkerDetection class, optional
+    calibration_cluster : dict or vedb_store.MarkerDetection class, optional
         output of calibration marker filtering (to remove spurious detections). Either 
         a dict (directly from output of vedb_gaze.marker_parsing.find_epochs function)
         or a MarkerDetection class loaded from vedb_store database. Must contain 'norm_pos' field with normalized (0-1)
@@ -870,9 +850,9 @@ def plot_session_qc(session,
         Results can be either dicts output by vedb_gaze.pupil_detection_pl.detect_pupils() or 
         a PupilDetection class returned from the `vedb_store` database.
         by default None
-    validation_marker_all : _type_, optional
+    validation_marker : _type_, optional
         _description_, by default None
-    validation_marker_filtered : _type_, optional
+    validation_cluster : _type_, optional
         _description_, by default None
     gaze : dict, optional
         dict of {'left': gaze_left, 'right': gaze_right} or None, by default None
@@ -923,7 +903,9 @@ def plot_session_qc(session,
         if isinstance(x, dict):
             list_values = []
             for vv in x.values():
-                if isinstance(vv, (list, np.ndarray)):
+                if isinstance(vv, np.ndarray) and isinstance(vv.tolist(), list):
+                    list_values.append(len(vv))
+                elif isinstance(vv, list):
                     list_values.append(len(vv))
             print(list_values)
             failed = all([v == 0 for v in list_values])
@@ -941,76 +923,86 @@ def plot_session_qc(session,
         ax.axis(axis)
         if title is not None:
             ax.set_title(title)
-    
+    try:
+        max_time_seconds = np.max([v['timestamp'].max() for v in pupil.values()])
+    except:
+        max_time_seconds = 0
+
+            
     # Inputs
     if font_kw is None:
         # Defaults (kwargs should not be dicts or other mutable types, so substitute here)
         font_kw = dict(fontname='Helvetica', fontsize=14)
 
-    if session.dbi is not None:
-        session.db_load()
-    
     if axs is None:
         ar = 4/3
         fig, axs = plt.subplots(3, 4, figsize=(ar * fig_scale, 0.75 * fig_scale),)
         fig.patch.set_color('w')
-        fig.suptitle('%s (%s): %s, %s, %.1f mins'%(session.folder, session.subject.subject_id,
-                                                  session.indoor_outdoor, session.instruction, 
-                                                  session.recording_duration / 60),
+        fig.suptitle('%s: %.1f mins'%(folder, max_time_seconds / 60),
                     **font_kw)
     else:
         fig = axs[0,0].figure
-
+    if video_fpath is None:
+        video_fpath = BASE_DIR / folder
     # Check status of all steps
     steps = ['pupil',
-             'calibration_marker_all',
-             'calibration_marker_filtered',
+             'calibration_marker',
+             'calibration_cluster',
              'calibration',
-             'validation_marker_all',
-             'validation_marker_filtered',
+             'validation_marker',
+             'validation_cluster',
              'gaze',
              'error']
     status = {}
     for step in steps:
-        status[step] = check_status(locals()[step])
+        if step in ['validation_marker','validation_cluster']:
+            this_step = locals()[step][validation_marker_epoch]
+        elif step in ['error']:
+            if error is None:
+                this_step = None
+            else:
+                this_step = dict((ee, error[ee][validation_marker_epoch]) for ee in error.keys())
+        else:
+            this_step = locals()[step]
+        status[step] = check_status(this_step)
 
     # Plot
-    if status['calibration_marker_filtered'] in ('not run', 'failed'):
+    if status['calibration_cluster'] in ('not run', 'failed'):
         # Filtering of calibration markers failed; try fallback plot of unfiltered marker position
-        if status['calibration_marker_all'] in ('not run', 'failed'):
+        if status['calibration_marker'] in ('not run', 'failed'):
             # Detection has failed entirely
-            msg = 'detection: %s\nfiltering: %s'%(status['calibration_marker_all'],
-                                                  status['calibration_marker_filtered'])
+            msg = 'detection: %s\nfiltering: %s'%(status['calibration_marker'],
+                                                  status['calibration_cluster'])
             disp_fail(msg, axs[0,0], title='Calibration Markers', axis=[0, 1, 0, 1])
             mk_for_eyes = None
             title = 'Calibration Markers'
         else:
             # Raw detection OK, just filtering failed
-            title='Calibration Markers\n(raw, filtering %s)'%(status['calibration_marker_filtered'])
+            title='Calibration Markers\n(raw, filtering %s)'%(status['calibration_cluster'])
             if do_slow_plots:
-                show_clustered_markers(_use_data(calibration_marker_all),
-                                                           session, 
+                show_clustered_markers(calibration_marker,
+                                                           video_fpath, 
                                                            n_blocks=8,
                                                            ax=axs[0,0]
                                                           )
             else:
-                cols_mkc = colormap_2d(*_use_data(calibration_marker_all)['norm_pos'].T)
-                axs[0,0].scatter(*_use_data(calibration_marker_all)['norm_pos'].T, 
+                cols_mkc = colormap_2d(*calibration_marker['norm_pos'].T)
+                axs[0,0].scatter(*calibration_marker['norm_pos'].T, 
                                  c=cols_mkc, alpha=0.1, )
-            mk_for_eyes = calibration_marker_all
+            mk_for_eyes = calibration_marker
     else:
         # Calibration markers detected and filtered correctly.
         if do_slow_plots:
-            show_clustered_markers(_use_data(calibration_marker_filtered),
-                                                       session, 
+            show_clustered_markers(calibration_cluster,
+                                                       video_fpath, 
                                                        ax=axs[0,0]
                                                       )
         else:
-            cols_mkc = colormap_2d(*_use_data(calibration_marker_filtered)['norm_pos'].T)
+            cols_mkc = colormap_2d(*calibration_cluster['norm_pos'].T)
             
-            axs[0,0].scatter(*_use_data(calibration_marker_filtered)['norm_pos'].T, c=cols_mkc)
+            axs[0,0].scatter(*calibration_cluster['norm_pos'].T, c=cols_mkc)
         title = 'Calibration Markers\n(filtered)'
-        mk_for_eyes = calibration_marker_filtered
+        mk_for_eyes = calibration_cluster
     # For whatever circumstance, set axis
     axs[0,0].axis([0, 1, 1, 0])
     axs[0,0].set_yticks([])
@@ -1019,9 +1011,9 @@ def plot_session_qc(session,
     
     # Pupils during calibration
     if status['pupil'] in ('failed', 'not run') or \
-        status['calibration_marker_all'] in ('failed', 'not run'):
+        status['calibration_marker'] in ('failed', 'not run'):
         msg_both = 'Pupil detection: %s\nCalibration marker%s'%(status['pupil'],
-            status['calibration_marker_all'])
+            status['calibration_marker'])
         disp_fail(msg_both, axs[1, 0], title='Left eye position\n during calibration', 
             axis=[1, 0, 1, 0],)
         disp_fail(msg_both, axs[2, 0], title='Right eye position\n during calibration', 
@@ -1030,13 +1022,13 @@ def plot_session_qc(session,
         # At least both pupils haven't failed.
         # To do: catch case for which pupil detection fails entirely for one eye. Seems unlikely.
         if do_slow_plots and (mk_for_eyes is not None):
-            plot_eye_at_marker(session, mk_for_eyes, pupil['left'], ax=axs[1, 0])
-            plot_eye_at_marker(session, mk_for_eyes, pupil['right'], ax=axs[2, 0])
+            plot_eye_at_marker(video_fpath, mk_for_eyes, pupil['left'], ax=axs[1, 0])
+            plot_eye_at_marker(video_fpath, mk_for_eyes, pupil['right'], ax=axs[2, 0])
         else:
             if mk_for_eyes is not None:
-                pl_match = match_time_points(_use_data(mk_for_eyes), _use_data(pupil['left']), )
+                pl_match = match_time_points(mk_for_eyes, pupil['left'], )
                 axs[1, 0].scatter(*pl_match['norm_pos'].T, c=cols_mkc, s=pl_match['confidence']*10)
-                pr_match = match_time_points(_use_data(mk_for_eyes), _use_data(pupil['right']), )
+                pr_match = match_time_points(mk_for_eyes, pupil['right'], )
                 axs[2, 0].scatter(*pr_match['norm_pos'].T, c=cols_mkc, s=pr_match['confidence']*10)
                 axs[1, 0].set_xticks([])
                 axs[1, 0].set_yticks([])
@@ -1050,42 +1042,42 @@ def plot_session_qc(session,
                 axs[2, 0].set_title('Right eye position\n during calibration', **font_kw)
             
     # Validation 
-    if status['validation_marker_filtered'] in ('not run', 'failed'):
+    if status['validation_cluster'] in ('not run', 'failed'):
         # Filtering of validation markers failed; try fallback plot of unfiltered marker position
-        if status['validation_marker_all'] in ('not run', 'failed'):
+        if status['validation_marker'] in ('not run', 'failed'):
             # Detection has failed entirely
-            msg = 'detection: %s\nfiltering: %s'%(status['validation_marker_all'],
-                                                  status['validation_marker_filtered'])
+            msg = 'detection: %s\nfiltering: %s'%(status['validation_marker'],
+                                                  status['validation_cluster'])
             disp_fail(msg, axs[0,2], title='Validation Markers', axis=[0, 1, 0, 1])
             mk_for_eyes_v = None
             title = 'Validation Markers'
         else:
             # Raw detection OK, just filtering failed
-            title='Validation Markers\n(raw, filtering %s)'%(status['validation_marker_filtered'])
+            title='Validation Markers\n(raw, filtering %s)'%(status['validation_cluster'])
             if do_slow_plots:
-                show_clustered_markers(_use_data(validation_marker_all),
+                show_clustered_markers(validation_marker,
                                                            session, 
                                                            n_blocks=8,
                                                            ax=axs[0,2]
                                                           )
             else:
-                cols_mkv = colormap_2d(*_use_data(validation_marker_all)['norm_pos'].T)
-                axs[0,2].scatter(*_use_data(validation_marker_all)['norm_pos'].T, 
+                cols_mkv = colormap_2d(*validation_marker['norm_pos'].T)
+                axs[0,2].scatter(*validation_marker['norm_pos'].T, 
                                  c=cols_mkv, alpha=0.1, )
-            mk_for_eyes_v = validation_marker_all
+            mk_for_eyes_v = validation_marker
     else:
         # validation markers detected and filtered correctly.
         if do_slow_plots:
-            show_clustered_markers(_use_data(validation_marker_filtered[validation_marker_epoch]),
-                                                       session, 
+            show_clustered_markers(validation_cluster[validation_marker_epoch],
+                                                       video_fpath, 
                                                        ax=axs[0,2]
                                                       )
         else:
-            cols_mkv = colormap_2d(*_use_data(validation_marker_filtered[validation_marker_epoch])['norm_pos'].T)
+            cols_mkv = colormap_2d(*validation_cluster[validation_marker_epoch]['norm_pos'].T)
             
-            axs[0,2].scatter(*_use_data(validation_marker_filtered[validation_marker_epoch])['norm_pos'].T, c=cols_mkv)
+            axs[0,2].scatter(*validation_cluster[validation_marker_epoch]['norm_pos'].T, c=cols_mkv)
         title = 'Validation Markers\n(filtered)'
-        mk_for_eyes_v = validation_marker_filtered[validation_marker_epoch]
+        mk_for_eyes_v = validation_cluster[validation_marker_epoch]
     # For whatever circumstance, set axis
     axs[0,2].axis([0, 1, 1, 0])
     axs[0,2].set_yticks([])
@@ -1094,9 +1086,9 @@ def plot_session_qc(session,
     
     # Pupils during validation
     if status['pupil'] in ('failed', 'not run') or \
-        status['validation_marker_all'] in ('failed', 'not run'):
+        status['validation_marker'] in ('failed', 'not run'):
         msg_both = 'Pupil detection: %s\nvalidation marker%s'%(status['pupil'],
-            status['validation_marker_all'])
+            status['validation_marker'])
         disp_fail(msg_both, axs[1, 2], title='Left eye position\n during validation', 
             axis=[1, 0, 1, 0],)
         disp_fail(msg_both, axs[2, 2], title='Right eye position\n during validation', 
@@ -1105,13 +1097,13 @@ def plot_session_qc(session,
         # At least both pupils haven't failed.
         # To do: catch case for which pupil detection fails entirely for one eye. Seems unlikely.
         if do_slow_plots and (mk_for_eyes_v is not None):
-            plot_eye_at_marker(session, mk_for_eyes_v, pupil['left'], ax=axs[1, 2])
-            plot_eye_at_marker(session, mk_for_eyes_v, pupil['right'], ax=axs[2, 2])
+            plot_eye_at_marker(video_fpath, mk_for_eyes_v, pupil['left'], ax=axs[1, 2])
+            plot_eye_at_marker(video_fpath, mk_for_eyes_v, pupil['right'], ax=axs[2, 2])
         else:
             if mk_for_eyes_v is not None:
-                pl_match = match_time_points(_use_data(mk_for_eyes_v), _use_data(pupil['left']), )
+                pl_match = match_time_points(mk_for_eyes_v, pupil['left'], )
                 axs[1, 2].scatter(*pl_match['norm_pos'].T, c=cols_mkv, s=pl_match['confidence']*10)
-                pr_match = match_time_points(_use_data(mk_for_eyes_v), _use_data(pupil['right']), )
+                pr_match = match_time_points(mk_for_eyes_v, pupil['right'], )
                 axs[2, 2].scatter(*pr_match['norm_pos'].T, c=cols_mkv, s=pr_match['confidence']*10)
                 axs[1, 2].set_xticks([])
                 axs[1, 2].set_yticks([])
@@ -1154,11 +1146,11 @@ def plot_session_qc(session,
             if status['error'][lr] in ('failed', 'not run'):
                 disp_fail('Errror calculation %s'%status['error'][lr], ax, **font_kw)
             else:
-                plot_error(_use_data(error[lr][validation_marker_epoch]), 
-                                                gaze=_use_data(gaze[lr]),
+                plot_error(error[lr][validation_marker_epoch], 
+                                                gaze=gaze[lr],
                                                 ax=ax)
-                ax.set_title('Err: med=%.2f, wt=%.2f'%(np.median(_use_data(error[lr][validation_marker_epoch])['gaze_err']),
-                                                            _use_data(error[lr][validation_marker_epoch])['gaze_err_weighted']))
+                ax.set_title('Err: med=%.2f, wt=%.2f'%(np.median(error[lr][validation_marker_epoch]['gaze_err']),
+                                                            error[lr][validation_marker_epoch]['gaze_err_weighted']))
             ax.set_xticks([])
             ax.set_yticks([])
         
@@ -1170,43 +1162,43 @@ def plot_session_qc(session,
     for offset, lr in enumerate(['right','left']):
         if (status['pupil'] not in ('failed', 'not run')) and (status['pupil'][lr] not in ('failed', 'not run')):
             # Find epochs within pupils
-            pupil_epochs = split_timecourse(_use_data(pupil[lr]), 
+            pupil_epochs = split_timecourse(pupil[lr], 
                                                 max_epoch_gap=1)
             for pe in pupil_epochs:
-                ptime = _get_timestamp(pe[0], session) / 60
-                axs[0, 1].imshow(_use_data(pe[0])['confidence'][None,:], 
+                ptime = pe[0]['timestamp'] / 60
+                axs[0, 1].imshow(pe[0]['confidence'][None,:], 
                                 extent=[ptime[0], ptime[-1], offset + 0.6, offset + 1.4],
                                 aspect='auto',
                                 cmap='gray_r',
                                 vmin=0.6, vmax=1.0,
                                 )
     # B. All detected calibration markers
-    if status['calibration_marker_all'] not in ('failed', 'not run'):
-        axs[0, 1].scatter(_get_timestamp(calibration_marker_all, session) / 60, 
-                        np.ones_like(_get_timestamp(calibration_marker_all, session)) * 4,
+    if status['calibration_marker'] not in ('failed', 'not run'):
+        axs[0, 1].scatter(calibration_marker['timestamp'] / 60, 
+                        np.ones_like(calibration_marker['timestamp']) * 4,
                         c=cal_color_lt, alpha=0.05,
                         )
     # C. Filtered calibration markers
-    if status['calibration_marker_filtered'] not in ('failed', 'not run'):
-        axs[0, 1].scatter(_get_timestamp(calibration_marker_filtered, session) / 60, 
-                          np.ones_like(_get_timestamp(calibration_marker_filtered, session)) * 3,
+    if status['calibration_cluster'] not in ('failed', 'not run'):
+        axs[0, 1].scatter(calibration_cluster['timestamp'] / 60, 
+                          np.ones_like(calibration_cluster['timestamp']) * 3,
                           c=cal_color, alpha=0.05,
                          )
     # D. All detected validation markers
-    if status['validation_marker_all'] not in ('failed', 'not run'):
-        axs[0, 1].scatter(_get_timestamp(validation_marker_all, session) / 60, 
-                          np.ones_like(_get_timestamp(validation_marker_all, session)) * 6,
+    if status['validation_marker'] not in ('failed', 'not run'):
+        axs[0, 1].scatter(validation_marker[validation_marker_epoch]['timestamp'] / 60, 
+                          np.ones_like(validation_marker[validation_marker_epoch]['timestamp']) * 6,
                           c=val_color_lt, alpha=0.05,
                          )
     # E. Filtered validation markers
-    if status['validation_marker_filtered'] not in ('failed', 'not run'):
-        axs[0, 1].scatter(_get_timestamp(validation_marker_filtered[validation_marker_epoch], session) / 60, 
-                          np.ones_like(_get_timestamp(validation_marker_filtered[validation_marker_epoch], session)) * 5,
+    if status['validation_cluster'] not in ('failed', 'not run'):
+        axs[0, 1].scatter(validation_cluster[validation_marker_epoch]['timestamp'][validation_marker_epoch] / 60, 
+                          np.ones_like(validation_cluster[validation_marker_epoch]['timestamp'][validation_marker_epoch]) * 5,
                           c=val_color, alpha=0.05,
                          )
     
     axs[0, 1].set_ylim([0, 7])
-    axs[0, 1].set_xlim([0, session.world_time[-1] / 60])
+    axs[0, 1].set_xlim([0, max_time_seconds / 60])
     axs[0, 1].set_yticks(range(1, 7))
     axs[0, 1].set_yticklabels(['$Pup_R$', '$Pup_L$',
                                '$C_{filt}$','$C_{all}$', 
@@ -1219,15 +1211,15 @@ def plot_session_qc(session,
     if status['pupil'] not in ('failed', 'not run'):
         bins = np.linspace(-0.1, 1.1, 101)
         if status['pupil']['left'] not in ('failed', 'not run'):
-            plot_utils.histline(_use_data(pupil['left'])['confidence'], bins=bins,
+            plot_utils.histline(pupil['left']['confidence'], bins=bins,
                                 ax=axs[0, 3], color='steelblue')
-            lpct = np.mean(_use_data(pupil['left'])['confidence'] > pupil_confidence_threshold) * 100
+            lpct = np.mean(pupil['left']['confidence'] > pupil_confidence_threshold) * 100
         else:
             lpct = 0
         if status['pupil']['right'] not in ('failed', 'not run'):
-            plot_utils.histline(_use_data(pupil['right'])['confidence'], bins=bins,
+            plot_utils.histline(pupil['right']['confidence'], bins=bins,
                                 ax=axs[0, 3], color='orange')
-            rpct = np.mean(_use_data(pupil['right'])['confidence'] > pupil_confidence_threshold) * 100
+            rpct = np.mean(pupil['right']['confidence'] > pupil_confidence_threshold) * 100
         else:
             rpct = 0
         yl = axs[0, 3].get_ylim()
@@ -1240,10 +1232,10 @@ def plot_session_qc(session,
 
     # Clear data to save memory
     if do_memory_cleanup:
-        for d in [calibration_marker_all, 
-                  calibration_marker_filtered,
-                  validation_marker_all,
-                  validation_marker_filtered,
+        for d in [calibration_marker, 
+                  calibration_cluster,
+                  validation_marker,
+                  validation_cluster,
                  ]:
             if (d is not None) and not (isinstance(d, dict)):
                 d._data = None
@@ -1278,7 +1270,7 @@ def gaze_rect(gaze_position, hdim, vdim, ax=None, linewidth=1, edgecolor='r', **
     rh = ax.add_patch(rect)
     return rh
 
-
+'''
 # Making gaze centered videos
 def _load_gaze_plot_elements(pipeline_elements,
                              frame_idx=None,
@@ -1359,8 +1351,8 @@ def _load_gaze_plot_elements(pipeline_elements,
         eye_right_ds = downsampler_right(world_time).astype(np.uint8)
 
     # Load pupil estimation
-    pupil_left = _use_data(pipeline_elements['pupil']['left'])
-    pupil_right = _use_data(pipeline_elements['pupil']['right'])
+    pupil_left = pipeline_elements['pupil']['left']
+    pupil_right = pipeline_elements['pupil']['right']
     pupil_left_matched, pupil_right_matched = match_time_points(dict(timestamp=world_time + pipeline_elements['session'].start_time),
                                                                 pupil_left,
                                                                 pupil_right,
@@ -1373,7 +1365,7 @@ def _load_gaze_plot_elements(pipeline_elements,
             gaze[k] = None
             gaze_matched[k] = None
         else:
-            gaze[k] = _use_data(pipeline_elements['gaze'][k])
+            gaze[k] = pipeline_elements['gaze'][k]
             gaze_matched[k] = match_time_points(
                 dict(timestamp=world_time + pipeline_elements['session'].start_time), gaze[k])
             # Handle gaze failures here? Not for now...
@@ -1392,6 +1384,7 @@ def _load_gaze_plot_elements(pipeline_elements,
                 time_idx=time_idx)
 
     return world_camera, eye_left_ds, eye_right_ds, pupil_left_matched, pupil_right_matched, gaze_matched, gc_video
+'''
 
 """
 def make_gaze_animation(session,
@@ -1498,7 +1491,7 @@ def render_gaze_video(session,
                      end_time,
                      sname,
                      elements_to_render=(
-                         'pupil', 'gaze', 'calibration_marker_filtered'),
+                         'pupil', 'gaze', 'calibration_cluster'),
                      gaze_to_show=('left', 'right'),
                      accumulate=False,
                      tmp_dir=None,
@@ -1616,17 +1609,17 @@ def render_gaze_video(session,
                                           zorder=10,
                                           )
         ax_world.axis([0, 1, 1, 0])
-    if 'calibration_marker_filtered' in elements_to_render:
-        calib_marker_pos = _use_data(pipeline['calibration_marker_filtered'])['norm_pos']
-        calib_marker_time = _use_data(pipeline['calibration_marker_filtered'])['timestamp']
+    if 'calibration_cluster' in elements_to_render:
+        calib_marker_pos = _use_data(pipeline['calibration_cluster'])['norm_pos']
+        calib_marker_time = _use_data(pipeline['calibration_cluster'])['timestamp']
         calib_mk = ax_world.scatter(*calib_marker_pos.T, color=cal_mk_color)
         calib_mk.set_offsets(calib_marker_pos[:0])
-    if 'validation_marker_filtered' in elements_to_render:
+    if 'validation_cluster' in elements_to_render:
         # Change variable names...
         val_marker_pos = [_use_data(x)['norm_pos']
-                          for x in pipeline['validation_marker_filtered']]
+                          for x in pipeline['validation_cluster']]
         val_marker_times = [_use_data(x)['timestamp']
-                            for x in pipeline['validation_marker_filtered']]
+                            for x in pipeline['validation_cluster']]
         val_mk = [ax_world.scatter(*vm_pos.T,
                                    c=val_mk_color)
                   for j, vm_pos in enumerate(val_marker_pos)]
@@ -1635,8 +1628,8 @@ def render_gaze_video(session,
 
     if 'error' in elements_to_render:
         # Change variable names...
-        vm_pos_all_for_err = _use_data(pipeline['validation_marker_all'])['norm_pos']
-        vm_time_all_for_err = _use_data(pipeline['validation_marker_all'])['timestamp'].tolist(
+        vm_pos_all_for_err = _use_data(pipeline['validation_marker'])['norm_pos']
+        vm_time_all_for_err = _use_data(pipeline['validation_marker'])['timestamp'].tolist(
         )
         err_marker_pos_left = [_use_data(x)['marker']
                                for x in pipeline['error']['left']]
@@ -1729,11 +1722,11 @@ def render_gaze_video(session,
                 gaze_left.set_offsets([tmp_gl])
             if 'right' in gaze_to_show:
                 gaze_right.set_offsets([tmp_gr])
-        if 'calibration_marker_filtered' in elements_to_render:
+        if 'calibration_cluster' in elements_to_render:
             if world_time_this_frame in calib_marker_time:
                 cmi = calib_marker_time.tolist().index(world_time_this_frame)
                 calib_mk.set_offsets(calib_marker_pos[:cmi])
-        if 'validation_marker_filtered' in elements_to_render:
+        if 'validation_cluster' in elements_to_render:
             vm_epoch_i = np.array(
                 [world_time_this_frame in vm_t for vm_t in val_marker_times])
             if np.any(vm_epoch_i):
@@ -2091,18 +2084,21 @@ def show_session(folder,
     return fig
 
 
-def background_fill_blocks(onoff, w=1, fcol=(.9, .9, .9), vert=False, zorder=-1, ylim=None, ax=None):
-    """Shade in xtick grid (every other tick mark is gray/white)"""
+def background_fill_blocks(onoff, fcol=(.9, .9, .9), zorder=-1, ylim=None, ax=None):
+    """Shade between each onset and offset in `onoff`"""
     if ax is None:
         ax = plt.gca()
     if ylim is None:
-        ylim = plt.ylim()
+        ylim = ax.get_ylim()
+    h = None
     for xf in onoff:
-        ax.fill(np.array([xf[0], xf[1], xf[1], xf[0]]),
+        h = ax.fill(np.array([xf[0], xf[1], xf[1], xf[0]]),
             [ylim[0], ylim[0], ylim[1], ylim[1]],
             color=fcol, edgecolor='none', zorder=zorder)
-    plt.ylim(ylim)
-
+    ax.set_ylim(ylim)
+    # Returns only one instance, not all, should be good for 
+    # legend but not setting new properties
+    return h
 
 
 # Pylids video overlay

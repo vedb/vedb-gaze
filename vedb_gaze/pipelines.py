@@ -13,9 +13,11 @@ from .options import config
 from .calibration import Calibration
 
 
+# Directory with eye videos, world videos, marker time, etc.
 BASE_DIR = pathlib.Path(config.get('paths', 'base_dir')).expanduser()
-PYDRA_OUTPUT_DIR = pathlib.Path(config.get('paths', 'pydra_cache') ).expanduser()
-BASE_OUTPUT_DIR = pathlib.Path(config.get('paths', 'output_dir') ).expanduser()
+# Directory for estimated gaze outputs (pupil estimates, gaze estimates, calibrations, etc)
+PROC_DIR = pathlib.Path(config.get('paths', 'proc_dir') ).expanduser()
+# Directory for saved sets of input arguments for functions
 PARAM_DIR = pathlib.Path(os.path.split(__file__)[0]) / 'config'
 
 # TODO: put these in a config file
@@ -612,7 +614,7 @@ def pipeline_vedb(session,
                   error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
                   calibration_epoch=0,
                   input_base=BASE_DIR,
-                  output_base=PYDRA_OUTPUT_DIR,
+                  output_base=PROC_DIR,
                   is_verbose=False,
                   gpu_kwargs=None,
                   ):
