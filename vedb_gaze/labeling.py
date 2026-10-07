@@ -627,7 +627,7 @@ def find_saccades(gaze,
 
     Returns
     -------
-    ClipLists for saccades, blinks
+    Binary arrays labeling saccades and blinks
     """    """"""
     # Clearer variables
     t = np.array(gaze['timestamp'])
@@ -648,13 +648,15 @@ def find_saccades(gaze,
     # For blink rate, if we want that...
     #blink_on = np.zeros_like(blink_extended)
     #blink_on[onoff_blink_extended[:,0]] = 1
-    blink_clips = ClipList.from_binary(blink_binary_extended, t, session=session)
+    # blink_clips = ClipList.from_binary(blink_binary_extended, t, session=session)
+    # change
     # Filter BS 1-frame clips
-    blink_clips.clip_list = [x for x in blink_clips if x.duration > 0]
-    saccade_clips = ClipList.from_binary(saccade_binary, t, session=session)
+    # blink_clips.clip_list = [x for x in blink_clips if x.duration > 0]
+    # saccade_clips = ClipList.from_binary(saccade_binary, t, session=session)
     # Filter BS 1-frame clips
-    saccade_clips.clip_list = [x for x in saccade_clips if x.duration > 0]
-    return saccade_clips, blink_clips
+    # saccade_clips.clip_list = [x for x in saccade_clips if x.duration > 0]
+    # return saccade_clips, blink_clips
+    return saccade_binary, blink_binary_extended
 
 
 # def plot_at_times(tt, y, time_start, time_end, 
