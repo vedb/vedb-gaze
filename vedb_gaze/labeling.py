@@ -15,6 +15,7 @@ from scipy.stats import zscore
 from sklearn.decomposition import PCA
 
 from .utils import onoff_from_binary, time_to_index, resample_data
+from .externals.remodnav import EyegazeClassifier
 # Need functions to: 
 # Smooth (just for gaze) w/ awareness of noise frequency bandwidth
 # Resample
@@ -655,6 +656,203 @@ def find_saccades(gaze,
     # Filter BS 1-frame clips
     saccade_clips.clip_list = [x for x in saccade_clips if x.duration > 0]
     return saccade_clips, blink_clips
+
+
+def find_saccades_remodnav(gaze,
+                           fps=120,
+                           degrees_horiz=101,
+                           degrees_vert=75.75,
+                           min_confidence=0.6,
+                           max_gap=None,
+                           saccade_labels=('SACC', 'ISAC'),
+                           # Classifier parameters (REMoDNaV defaults)
+                           pursuit_velthresh=2.0,
+                           noise_factor=5.0,
+                           velthresh_startvelocity=300.0,
+                           min_intersaccade_duration=0.04,
+                           min_saccade_duration=0.01,
+                           max_initial_saccade_freq=2.0,
+                           saccade_context_window_length=1.0,
+                           max_pso_duration=0.04,
+                           min_fixation_duration=0.04,
+                           min_pursuit_duration=0.04,
+                           lowpass_cutoff_freq=4.0,
+                           # Preprocessing parameters (REMoDNaV defaults,
+                           # except `savgol_length`)
+                           min_blink_duration=0.02,
+                           dilate_nan=0.01,
+                           median_filter_length=0.05,
+                           savgol_length=None,
+                           savgol_polyord=2,
+                           max_vel=1000.0,
+                           ):
+    """Find saccades (and fixations, pursuits, and post-saccadic oscillations)
+    with the REMoDNaV algorithm
+
+    The classification is done by `vedb_gaze.externals.remodnav`, which is
+    derived from the REMoDNaV package (version 1.1.2,
+    https://github.com/psychoinformatics-de/remodnav, MIT license) with the
+    algorithm unchanged. This function only adapts vedb gaze data to its
+    input requirements and its output to vedb_gaze conventions. If you use
+    it, please cite:
+
+        Dar, A. H., Wagner, A. S., & Hanke, M. (2021). REMoDNaV: robust
+        eye-movement classification for dynamic stimulation. Behavior Research
+        Methods, 53(1), 399-414. https://doi.org/10.3758/s13428-020-01428-x
+
+    Steps:
+    1. Gaze position (normalized 0-1 world camera coordinates) is converted
+       to degrees by scaling by `degrees_horiz` and `degrees_vert`. This
+       assumes degrees are linear across the world camera image, which is
+       not true for the fisheye world camera lens (same assumption as
+       `compute_eye_velocity`).
+    2. Samples with confidence below `min_confidence` are set to NaN, which
+       REMoDNaV treats as signal loss (e.g. blinks).
+    3. Data are linearly resampled to a uniform rate of `fps`, which
+       REMoDNaV requires. Resampled points that fall in a gap between
+       original samples longer than `max_gap` are set to NaN.
+    4. REMoDNaV preprocessing (spike filter, NaN dilation, Savitzky-Golay
+       smoothing, velocity computation) and classification are run.
+
+    Note that REMoDNaV was developed for 500-1000 Hz eye trackers; its
+    default durations correspond to only a few samples at 120 Hz, and may
+    need tuning for vedb data.
+
+    Parameters
+    ----------
+    gaze : dict
+        gaze dict with 'timestamp', 'norm_pos' (0-1 gaze position estimates
+        in normalized world camera coordinates), and (optionally)
+        'confidence' fields
+    fps : scalar, optional
+        sampling rate (Hz) to which gaze is resampled before classification,
+        by default 120
+    degrees_horiz : scalar, optional
+        horizontal size of world camera field of view in degrees, by default 101
+    degrees_vert : scalar, optional
+        vertical size of world camera field of view in degrees, by default 75.75
+    min_confidence : scalar or None, optional
+        gaze samples below this confidence are treated as missing data, by
+        default 0.6. None to keep all samples.
+    max_gap : scalar or None, optional
+        maximum gap (in seconds) between original samples across which to
+        interpolate; resampled points in longer gaps are treated as missing
+        data. If None, defaults to 3 / `fps`.
+    saccade_labels : tuple, optional
+        REMoDNaV event labels to include in `saccades_onoff`, by default
+        ('SACC', 'ISAC') (major saccades and saccades found within
+        inter-saccade periods). Other labels are 'HPSO', 'LPSO', 'IHPS',
+        'ILPS' (high / low velocity post-saccadic oscillations), 'FIXA'
+        (fixation), and 'PURS' (pursuit).
+    pursuit_velthresh, noise_factor, velthresh_startvelocity,
+    min_intersaccade_duration, min_saccade_duration, max_initial_saccade_freq,
+    saccade_context_window_length, max_pso_duration, min_fixation_duration,
+    min_pursuit_duration, lowpass_cutoff_freq :
+        REMoDNaV classifier parameters (velocities in deg/s, durations in
+        seconds); see `vedb_gaze.externals.remodnav.EyegazeClassifier` and
+        Dar et al. (2021) for descriptions. Defaults match REMoDNaV.
+    min_blink_duration, dilate_nan, median_filter_length, savgol_polyord,
+    max_vel :
+        REMoDNaV preprocessing parameters (durations in seconds); see
+        `vedb_gaze.externals.remodnav.EyegazeClassifier.preproc`. Defaults
+        match REMoDNaV.
+    savgol_length : scalar or None, optional
+        Savitzky-Golay filter length in seconds. REMoDNaV's default (0.019 s)
+        does not give a valid (odd) window length at 120 Hz, so if None
+        (default), the shortest odd window of at least 0.019 s and more than
+        `savgol_polyord` samples is used (3 samples at 120 Hz).
+
+    Returns
+    -------
+    dict with fields:
+        timestamp : array
+            resampled (uniform) timestamps, on the same clock as
+            gaze['timestamp']
+        position : array
+            (n, 2) preprocessed (filtered) gaze position in degrees from the
+            top left of the world camera image
+        velocity : array
+            gaze velocity in degrees per second
+        events : dict of arrays
+            all REMoDNaV events, with fields 'label', 'start_time',
+            'end_time', 'duration', 'start_x', 'start_y', 'end_x', 'end_y'
+            (degrees), 'amp' (degrees), 'peak_vel', 'med_vel', 'avg_vel'
+            (deg/s), and 'id'. Times are on the gaze['timestamp'] clock.
+        saccades_onoff : array
+            (n, 3) array of (onset, offset, duration) for events with labels
+            in `saccade_labels`, same format as `blinks_onoff` output of
+            blink detection functions.
+    """
+    t = np.asarray(gaze['timestamp'], dtype=float)
+    xy = np.asarray(gaze['norm_pos'], dtype=float) * \
+        np.array([degrees_horiz, degrees_vert])
+    if (min_confidence is not None) and ('confidence' in gaze):
+        xy[np.asarray(gaze['confidence']) < min_confidence] = np.nan
+
+    # Resample to uniform sampling rate; NaNs (low confidence) are not
+    # interpolated over, and remain as missing data
+    new_time = np.arange(t[0], t[-1], 1 / fps)
+    _, xy = resample_data(t, xy, new_time=new_time,
+                          method='linear_interpolation', remove_nans=False)
+    # Treat resampled points within long gaps in original data as missing
+    if max_gap is None:
+        max_gap = 3 / fps
+    idx = np.clip(np.searchsorted(t, new_time, side='right'), 1, len(t) - 1)
+    in_gap = (t[idx] - t[idx - 1]) > max_gap
+    xy[in_gap] = np.nan
+
+    if savgol_length is None:
+        n = max(int(np.ceil(0.019 * fps)), savgol_polyord + 1)
+        if n % 2 == 0:
+            n += 1
+        # REMoDNaV converts seconds to samples with int(); offset by half a
+        # sample to avoid floating point rounding down
+        savgol_length = (n + 0.5) / fps
+
+    clf = EyegazeClassifier(
+        px2deg=1.0,  # data are already in degrees
+        sampling_rate=fps,
+        pursuit_velthresh=pursuit_velthresh,
+        noise_factor=noise_factor,
+        velthresh_startvelocity=velthresh_startvelocity,
+        min_intersaccade_duration=min_intersaccade_duration,
+        min_saccade_duration=min_saccade_duration,
+        max_initial_saccade_freq=max_initial_saccade_freq,
+        saccade_context_window_length=saccade_context_window_length,
+        max_pso_duration=max_pso_duration,
+        min_fixation_duration=min_fixation_duration,
+        min_pursuit_duration=min_pursuit_duration,
+        lowpass_cutoff_freq=lowpass_cutoff_freq,
+    )
+    data = np.rec.fromarrays([xy[:, 0].copy(), xy[:, 1].copy()],
+                             names=['x', 'y'])
+    pp = clf.preproc(data,
+                     min_blink_duration=min_blink_duration,
+                     dilate_nan=dilate_nan,
+                     median_filter_length=median_filter_length,
+                     savgol_length=savgol_length,
+                     savgol_polyord=savgol_polyord,
+                     max_vel=max_vel,
+                     )
+    events = clf(pp, classify_isp=True, sort_events=True)
+
+    # Convert event times (seconds from first sample) to gaze clock
+    for e in events:
+        e['start_time'] += new_time[0]
+        e['end_time'] += new_time[0]
+        e['duration'] = e['end_time'] - e['start_time']
+    fields = clf.record_field_names + ['duration']
+    events_out = dict((k, np.array([e[k] for e in events])) for k in fields)
+    saccades_onoff = np.array([(e['start_time'], e['end_time'], e['duration'])
+                               for e in events if e['label'] in saccade_labels])
+    saccades_onoff = saccades_onoff.reshape(-1, 3)
+
+    return dict(timestamp=new_time,
+                position=np.vstack([pp['x'], pp['y']]).T,
+                velocity=pp['vel'],
+                events=events_out,
+                saccades_onoff=saccades_onoff,
+                )
 
 
 # def plot_at_times(tt, y, time_start, time_end, 
