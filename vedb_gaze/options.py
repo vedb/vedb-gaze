@@ -1,3 +1,16 @@
+"""Configuration options for vedb_gaze.
+
+On import, reads the package's ``defaults.cfg`` and overlays a per-user
+``options.cfg`` from the appdirs user config directory (e.g.
+``~/.config/vedb-gaze/options.cfg`` on Linux). If the user file does not
+exist, it is created as a copy of the defaults, to be edited by the user.
+
+The resulting `configparser.ConfigParser` is exposed as `config`. Sections:
+
+- ``[paths]`` : ``base_dir`` (raw session folders) and ``proc_dir``
+  (processed outputs); used by `pipelines` as `BASE_DIR` / `PROC_DIR`.
+- ``[defaults]`` : default parameter tags for each pipeline step.
+"""
 import os
 import appdirs
 try:

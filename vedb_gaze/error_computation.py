@@ -1,3 +1,11 @@
+"""Computation of gaze error at validation markers.
+
+Provides `compute_error`, the function named by ``config/error-<tag>.yaml``
+and run by the `pipelines.compute_error` step. Error is the distance between
+mapped gaze and validation marker positions, in degrees of visual angle
+(approximated from image resolution and camera field of view), and is
+interpolated / smoothed across the image.
+"""
 import numpy as np
 from scipy import interpolate
 
@@ -45,41 +53,87 @@ def compute_error(marker,
                   degrees_vert=75.75,):
     """Compute error at set points and interpolation between those points
 
+    Gaze is matched in time to marker detections, low-confidence points are
+    dropped, points are optionally reduced to one per marker cluster, and
+    outliers are removed. Error (in degrees) at the remaining marker
+    positions is then interpolated over a grid covering the image.
+
     Parameters
     ----------
-    marker : array
-        estimated marker position and confidence; needs field 'norm_pos' only ()
-    gaze : _type_
-        _description_
+    marker : dict of arrays
+        validation marker detections, with fields 'timestamp', 'norm_pos'
+        (n, 2) and, if `cluster_reduce_fn` is not None, 'marker_cluster_index'
+    gaze : dict of arrays
+        estimated gaze, with fields 'timestamp', 'norm_pos' (normalized 0-1)
+        and 'confidence'. If lengths differ from `marker`, gaze is matched to
+        marker timestamps with `utils.match_time_points`.
     method : str, optional
-        _description_, by default 'tps'
-    error_smoothing_kernels : _type_, optional
-        _description_, by default None
-    vertical_horizontal_smooth_error_resolution : _type_, optional
-        vertical and horizontal resolution of the smoothed error estimate. 
-        If None, defaults to 0.25 * `image_resolution`
-    lambd : float, optional
-        lambda parameter for thin plate spline smoothing, by default 0.001
+        interpolation of error across the image: 'griddata' (cubic
+        interpolation), 'tps' (thin-plate spline with smoothing `lambd`), or
+        'tps_cv' (thin-plate spline with `lambd` chosen from a list by
+        leave-one-out cross-validation), by default 'tps_cv'
+    error_smoothing_kernels : tuple, optional
+        kernel size for `cv2.blur` smoothing of the error image; used only for
+        method 'griddata', by default None (no smoothing)
+    vertical_horizontal_smooth_error_resolution : tuple or float, optional
+        (vertical, horizontal) size of the error image grid; a scalar is
+        instead a fraction of `image_resolution`. If None, defaults to
+        0.25 * `image_resolution`. By default (300, 400).
+    lambd : float or sequence of floats, optional
+        thin-plate spline smoothing parameter: a single float for 'tps', or a
+        sequence of candidate values for 'tps_cv', by default 16 log-spaced
+        values from 1e-6 to 10
     outlier_stds : float, optional
         criterion for excluding outlying error estimates; error estimates will be
-        excluded if greater than this number of standard deviations from gaze
-        error median
+        excluded if more than this number of standard deviations from the gaze
+        error median, by default 4; None skips outlier removal
     extrapolate : bool, optional
         flag for whether to estimate error outside of locations for validation
         markers (i.e. whether to extrapolate), by default False
-    min_pupil_confidence : int, optional
-        _description_, by default 0
+    min_pupil_confidence : float, optional
+        minimum gaze 'confidence' for a point to be used, by default 0.6
+    cluster_reduce_fn : callable or str, optional
+        function (or importable name, e.g. 'numpy.median') used to reduce
+        marker and gaze positions to one point per marker cluster, by default
+        np.median; None uses all points
     image_resolution : tuple, optional
-        _description_, by default (2048, 1536)
-    degrees_horiz : int, optional
-        _description_, by default 125
-    degrees_vert : int, optional
-        _description_, by default 111
+        (horizontal, vertical) size of the world video in pixels, by default
+        (2048, 1536)
+    degrees_horiz : float, optional
+        horizontal field of view of the world camera in degrees, by default 101
+    degrees_vert : float, optional
+        vertical field of view of the world camera in degrees, by default 75.75
 
     Returns
     -------
-    _type_
-        _description_
+    error : dict
+        'gaze_err' : error (degrees) at each retained point (or cluster);
+        'gaze_err_angle' : direction of each error vector (from marker to
+        gaze), radians in (-pi, pi]: 0 = gaze above the marker, increasing
+        clockwise on the image (pi/2 = right, +/-pi = below, -pi/2 = left).
+        Same convention as `visualization.angle_hist` (which takes degrees:
+        ``angle_hist(np.degrees(error['gaze_err_angle']))``). Computed as
+        arctan2(dx, -dy) on the pixel error vector (image y increases
+        downward). NOTE: before 2026-10, this was arctan2(dx, dy) (0 = below,
+        counterclockwise); error files computed earlier use that convention.
+        'gaze_err_image' : (vres, hres) interpolated error (degrees), NaN
+        outside the validated area unless `extrapolate`; floored at the
+        minimum point error;
+        'gaze_err_weighted' : mean of `gaze_err_image` weighted by the
+        histogram of ALL gaze positions in `gaze`, over the non-NaN region;
+        'gaze_fraction_excluded' : fraction of gaze points falling in NaN
+        (non-validated) regions of `gaze_err_image`;
+        'gaze_time' : marker timestamps of points passing the confidence
+        threshold;
+        'gaze_matched' : retained gaze positions (normalized);
+        'marker' : retained marker positions (normalized);
+        'xgrid', 'ygrid' : normalized coordinates of the error image grid.
+
+    Raises
+    ------
+    ValueError
+        if fewer than 4 points remain after filtering, or if
+        `cluster_reduce_fn` is set but `marker` has no 'marker_cluster_index'
     """
     # Pixels per degree, coarse estimate for error computation
     # Default degrees are 125 x 111, this assumes all data is collected 
@@ -145,9 +199,11 @@ def compute_error(marker,
     if len(marker_pos) < 4:
         raise ValueError('Too few points to compute error across visual field.')
 
-    # Angle of error
+    # Direction of error: 0 = up, clockwise on the image (image y points down),
+    # matching visualization.angle_hist
     err_vector = gz_image - vp_image
-    gaze_err_angle = np.arctan2(*err_vector.T)
+    dx, dy = err_vector.T
+    gaze_err_angle = np.arctan2(dx, -dy)
     if vertical_horizontal_smooth_error_resolution is None:
         vertical_horizontal_smooth_error_resolution = 0.25
     if not isinstance(vertical_horizontal_smooth_error_resolution, (list, tuple)):
@@ -166,6 +222,7 @@ def compute_error(marker,
     if method=='griddata':
         gaze_err_image = tmp
         if error_smoothing_kernels is not None:
+            import cv2
             tmp = np.nan_to_num(gaze_err_image, nan=np.nanmax(gaze_err))
             tmp = cv2.blur(tmp, error_smoothing_kernels)
             tmp[np.isnan(gaze_err_image)] = np.nan
