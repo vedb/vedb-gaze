@@ -14,10 +14,10 @@ as 'timestamp', 'norm_pos', 'confidence'), with positions in normalized
 Notes
 -----
 Depends on the external `plot_utils` and `file_io` packages. Some functions
-(`plot_eye_at_marker`, `plot_at_times`) use `vedb_store`, and `show_dots`
-expects `vedb_store` objects. Several functions near the end of the module
-(`make_gaze_animation`, `show_session`, `label_eye_video`, `plot_at_times`)
-reference undefined names and appear not to run as written. Large
+(`plot_eye_at_marker`) use `vedb_store`, and `show_dots` expects `vedb_store`
+objects. Several functions near the end of the module (`make_gaze_animation`,
+`show_session`, `label_eye_video`) reference undefined names and appear not
+to run as written. Large
 triple-quoted blocks in the module hold older, disabled code.
 """
 import matplotlib.pyplot as plt
@@ -33,7 +33,7 @@ import plot_utils
 import file_io
 from .options import config
 from .marker_parsing import marker_cluster_stat, split_timecourse
-from .utils import load_pipeline_elements,  match_time_points
+from .utils import load_pipeline_elements,  match_time_points, get_frame_indices
 from . import calibration as vedbcalibration
 
 BASE_DIR = pathlib.Path(config.get('paths','base_dir'))
@@ -946,9 +946,8 @@ def plot_error_markers(markers, gaze,
 
     Notes
     -----
-    Returns None without plotting if fewer than 10 points pass the
-    confidence threshold (the message printed in that case references an
-    undefined variable `j` and will raise a NameError).
+    Prints a message and returns None without plotting if fewer than 10
+    points pass the confidence threshold.
     """
     # left: (0.0, 0.0, 0.9)
     # right: (0.95, 0.85, 0)
@@ -967,7 +966,8 @@ def plot_error_markers(markers, gaze,
         vp = markers['norm_pos']
         gl_ci = gaze_matched['confidence'] > confidence_threshold        
         if (gl_ci.sum() < 10):
-            print("Insufficient number of points retained after assessing pupil confidence for v epoch %d" % j)
+            print("Insufficient number of points retained after assessing pupil confidence "
+                  "(%d < 10); not plotting." % gl_ci.sum())
             return
         vp = vp[gl_ci]
         gl = gl[gl_ci]
@@ -1431,17 +1431,19 @@ def plot_session_qc(folder,
         else:
             # Raw detection OK, just filtering failed
             title='Validation Markers\n(raw, filtering %s)'%(status['validation_cluster'])
+            # Raw (unclustered) detections for the selected validation epoch
+            validation_marker_raw = validation_marker[validation_marker_epoch]
             if do_slow_plots:
-                show_clustered_markers(validation_marker,
-                                                           session, 
+                show_clustered_markers(validation_marker_raw,
+                                                           video_fpath, 
                                                            n_blocks=8,
                                                            ax=axs[0,2]
                                                           )
             else:
-                cols_mkv = colormap_2d(*validation_marker['norm_pos'].T)
-                axs[0,2].scatter(*validation_marker['norm_pos'].T, 
+                cols_mkv = colormap_2d(*validation_marker_raw['norm_pos'].T)
+                axs[0,2].scatter(*validation_marker_raw['norm_pos'].T, 
                                  c=cols_mkv, alpha=0.1, )
-            mk_for_eyes_v = validation_marker
+            mk_for_eyes_v = validation_marker_raw
     else:
         # validation markers detected and filtered correctly.
         if do_slow_plots:
@@ -2702,11 +2704,10 @@ def plot_at_times(tt, y, time_start, time_end,
     **kwargs
         passed to `ax.plot`
 
-    Notes
-    -----
-    Uses `vedb_store.utils.get_frame_indices`, but `vedb_store` is not
-    imported in this module, so this raises a NameError as written. Any
-    other `time_units` value leaves `multiplier` undefined.
+    Raises
+    ------
+    ValueError
+        if `time_units` is not 'seconds' / 's' or 'minutes' / 'm'
     """
     if ax is None:
         _, ax = plt.subplots()
@@ -2714,7 +2715,9 @@ def plot_at_times(tt, y, time_start, time_end,
         multiplier = 1
     elif time_units in ('minutes', 'm'):
         multiplier = 60
-    st, fin = vedb_store.utils.get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
+    else:
+        raise ValueError(f"time_units={time_units!r} not supported; use 'seconds' ('s') or 'minutes' ('m').")
+    st, fin = get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
     ax.plot(tt[st:fin] / multiplier, y[st:fin], **kwargs)
 
 
