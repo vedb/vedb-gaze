@@ -1028,6 +1028,9 @@ def pipeline_vedb(session,
         calibration_args = []
         error_args = []
     else:
+        # Must match the hash inputs in `utils.make_file_strings`. The eyelid
+        # tag is included because pupil detrending (planned) will use eyelid
+        # positions and runs before calibration.
         calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
                                        pupil_tag, eyelid_tag, pupil_detrend_tag] if x is not None]

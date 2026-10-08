@@ -597,7 +597,7 @@ def make_file_strings(
         Tag for the pupil detection algorithm (used in pupil filename and
         hashes).
     eyelid : str or None
-        Eyelid detection tag; only used in the error hash.
+        Eyelid detection tag; only used in the calibration and error hashes.
     pupil_detrend : str or None
         Pupil detrending tag; only used in the calibration and error hashes.
     calibration_marker : str or None
@@ -654,9 +654,13 @@ def make_file_strings(
         validation_marker = validation_marker.replace('4x7', validation_checkerboard_size)
     #print(validation_marker)
         
+    # Must match the hash inputs in `pipelines.pipeline_vedb`. `eyelid` is
+    # included because pupil detrending (planned; see
+    # `pipelines.detrend_pupil`) will use eyelid positions and runs before
+    # calibration.
     calibration_args = [x for x in [calibration_marker, calibration_split, \
                                        calibration_cluster, f'epoch{calibration_epoch:02d}', \
-                                       pupil, pupil_detrend] if x is not None]
+                                       pupil, eyelid, pupil_detrend] if x is not None]
     # '-' will mess up later parsing of file names, so replace; this *might* make hashes non-unique, but is most likely to be fine.
     calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
     error_args = [x for x in [calibration_marker, calibration_split, \
