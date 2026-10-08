@@ -760,9 +760,9 @@ def filter_and_split(marker,
 
     Returns
     -------
-    None
-        NOTE: the computed `epochs` are currently not returned (there is no
-        return statement), so this function always returns None.
+    epochs : list of dicts
+        one dict of arrays of (filtered) marker detections per epoch, the
+        same form as returned by `find_epochs`
     """
     if do_duration_pre_check:
         marker = remove_brief_detections(marker, all_timestamps,
@@ -782,6 +782,8 @@ def filter_and_split(marker,
                               min_epoch_length=min_epoch_length,
                               max_epoch_length=max_epoch_length,
                               is_verbose=is_verbose)
+    # split_timecourse returns one list (of one dict per input) per epoch
+    return [ee[0] for ee in epochs]
 
 def filter_and_cluster(marker,
                 all_timestamps,

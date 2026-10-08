@@ -396,8 +396,8 @@ def marker_splitting(marker_file,
     fnames : list or pathlib.Path
         list of paths ``output_dir / 'marker-<orig_tag>-<param_tag>-epoch<NN>.npz'``,
         one per epoch (existing files matching this pattern are returned
-        without recomputing). On failure, a one-element list with a
-        '.failed' file name (str, not full path). If `marker_file` is a
+        without recomputing). On failure, a one-element list with the path
+        of the (empty) '.failed' file that is written. If `marker_file` is a
         failed file, ``output_dir / 'previous_step.failed'``.
     """
     if is_notebook():
@@ -441,9 +441,9 @@ def marker_splitting(marker_file,
     failed = len(data) == 0
     # Manage epochs
     if failed:
-        fname = f'marker-{orig_tag}-{param_tag}-{epoch_str}.failed'
-        (output_dir / fname).open()
-        fnames = [fname]
+        fpath_fail = output_dir / f'marker-{orig_tag}-{param_tag}-{epoch_str}.failed'
+        fpath_fail.open(mode='w')
+        fnames = [fpath_fail]
 
     elif (len(data) >= 1):
         # Save each data instance as an epoch if 'epochall' provided    
