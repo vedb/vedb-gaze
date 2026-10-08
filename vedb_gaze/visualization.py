@@ -207,12 +207,12 @@ def plot_timestamps(timestamps, full_time, start_time=0, ax=None, **kwargs):
     Notes
     -----
     The x axis is in minutes (`full_time / 60`). Membership is tested with
-    exact equality (`np.in1d`), so `timestamps - start_time` must exactly
+    exact equality (`np.isin`), so `timestamps - start_time` must exactly
     match values in `full_time`.
     """
     xlim = [full_time.min()/60, full_time.max()/60]
     # Get timing for each epoch
-    calibration_time_index = np.in1d(full_time, timestamps-start_time)
+    calibration_time_index = np.isin(full_time, timestamps-start_time)
     if ax is None:
         fig, ax = plt.subplots()
     ax.plot(full_time / 60, calibration_time_index, **kwargs)
@@ -481,7 +481,7 @@ def make_dot_overlay_animation(
         # not all, because often we use e.g. first and last timestamps of calibration epoch to select video time,
         # so the video time will be 2 frames shorter...
         acceptable_wiggle_room = 5  # frames in dot timestamps that are not in video
-        if (np.sum(np.in1d(this_dot['timestamp'], video_timestamps)) - len(this_dot['timestamp'])) < acceptable_wiggle_room:
+        if (np.sum(np.isin(this_dot['timestamp'], video_timestamps)) - len(this_dot['timestamp'])) < acceptable_wiggle_room:
             print("Timestamps already in video timestamps")
             dots_matched.append(this_dot)
         else:
@@ -491,7 +491,7 @@ def make_dot_overlay_animation(
     dots_matched = tuple(dots_matched)
     vframes = []
     for this_dot in dots_matched:
-        tmp, = np.nonzero(np.in1d(video_timestamps, this_dot['timestamp']))
+        tmp, = np.nonzero(np.isin(video_timestamps, this_dot['timestamp']))
         print("n frames detected in video is:")
         print(len(tmp))
         vframes.append(tmp)

@@ -41,7 +41,7 @@ def find_duplicates(timestamps, mode='all',):
     if mode == 'first':
         duplicates = None
     elif mode == 'all':
-        duplicates = np.in1d(timestamps, aa[bb > 1])
+        duplicates = np.isin(timestamps, aa[bb > 1])
     return duplicates
 
 def _bimodality_check(data, n_stds_separate=2.5, ):
@@ -118,7 +118,7 @@ def remove_brief_detections(markers, all_timestamps, duration_threshold=0.6, is_
             if is_verbose:
                 print("To:      %.10f" %(time_values_clean[jj]))
 
-    time_index = np.in1d(all_timestamps, time_values_clean)
+    time_index = np.isin(all_timestamps, time_values_clean)
     # Filter for duration
     onoff = utils.onoff_from_binary(time_index)
     keepers = onoff[:,2] > duration_threshold
@@ -543,7 +543,7 @@ def cluster_marker_points(markers,
     if len(keep_cluster_numbers) < min_n_clusters:
         # Too few clusters meet required parameters
         return None
-    keep_clusters_i = np.in1d(groups, keep_cluster_numbers)
+    keep_clusters_i = np.isin(groups, keep_cluster_numbers)
     if keep_clusters_i.sum() == 0:
         # No groups meet threshold
         return None
