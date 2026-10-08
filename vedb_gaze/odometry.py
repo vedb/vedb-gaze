@@ -92,15 +92,9 @@ def load_odometry(folder,
         'angular_velocity', 'linear_acceleration', 'angular_acceleration'
         (units as recorded by the tracker; position in meters), plus
         computed 'absolute_linear_velocity' (norm of linear velocity),
-        'roll', 'pitch', 'yaw' (degrees, from `euler_from_quaternion`; see
-        Notes), and 'timestamp' (resampled if `resample`). Any other
-        fields in the file are kept but not resampled or smoothed.
-
-    Notes
-    -----
-    `euler_from_quaternion` returns columns in the order (pitch, roll,
-    yaw), but they are unpacked here as (roll, pitch, yaw), so the 'roll'
-    and 'pitch' fields appear to be swapped.
+        'pitch', 'roll', 'yaw' (degrees, from `euler_from_quaternion`),
+        and 'timestamp' (resampled if `resample`). Any other fields in the
+        file are kept but not resampled or smoothed.
     """
     if smooth_kwargs is None:
         if smooth_filter_function is savgol_filter:
@@ -168,7 +162,8 @@ def load_odometry(folder,
     # Compute useful quantities
     data_dict['absolute_linear_velocity'] = np.linalg.norm(data_dict['linear_velocity'], axis=1)
     ori_ang = euler_from_quaternion(*data_dict['orientation'].T)
-    data_dict['roll'], data_dict['pitch'], data_dict['yaw'] = ori_ang.T
+    # euler_from_quaternion returns columns in the order (pitch, roll, yaw)
+    data_dict['pitch'], data_dict['roll'], data_dict['yaw'] = ori_ang.T
 
     # Put time back
     data_dict['timestamp'] = odo_t
