@@ -403,7 +403,16 @@ def cluster_marker_points(markers,
         'norm_pos', by default 4/3
     max_cluster_std : float, optional
         maximum mean (over x, y) standard deviation of aspect-corrected marker
-        'norm_pos' within a cluster, by default 2.0; None skips this check
+        'norm_pos' within a cluster, by default 2.0; None skips this check.
+        NOTE: this check currently has no effect. 'norm_pos' is in
+        normalized (0-1) units, so the mean std can be at most ~0.58 (and
+        is ~0.001-0.01 for a steady marker), far below the default (2.0) and
+        the value in all configs (4.0); no cluster is ever removed. The
+        intended units are unclear (possibly a threshold in standard
+        deviations across clusters, like `bimodal_std_threshold`, or a
+        threshold in pixels). Left as is so as not to change existing
+        results; check the distribution of cluster stds on real data before
+        making it effective.
     max_marker_movement : float, optional
         maximum range (peak-to-peak) of aspect-corrected marker 'norm_pos' in
         x and in y within a cluster, by default None (no check)
@@ -530,7 +539,9 @@ def cluster_marker_points(markers,
         if is_verbose:
             print('%d groups after pupil jitter filtering' %
                   (keep_clusters_binary.sum()))
-    # Keep clusters that have a standard deviation lower than a set threshold
+    # Keep clusters that have a standard deviation lower than a set threshold.
+    # NOTE: currently never removes anything - stds of normalized positions are
+    # < ~0.58, thresholds used are 2.0 / 4.0 (see `max_cluster_std` docstring).
     if max_cluster_std is not None:
         marker_cluster_stds = marker_cluster_stat(markers, field='norm_pos',
                                            fn=np.std, return_all_fields=False)
