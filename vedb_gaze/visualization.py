@@ -166,7 +166,9 @@ def angle_hist(angles, bins=abins, ax=None):
 
     Notes
     -----
-    Zero degrees is drawn at the top and angles increase clockwise.
+    Zero degrees is drawn at the top and angles increase clockwise. This is
+    the convention of 'gaze_err_angle' from
+    `error_computation.compute_error` (after converting to degrees).
     Nothing is returned.
     """
     # Compute pie slices

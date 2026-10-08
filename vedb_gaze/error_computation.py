@@ -108,8 +108,14 @@ def compute_error(marker,
     -------
     error : dict
         'gaze_err' : error (degrees) at each retained point (or cluster);
-        'gaze_err_angle' : direction of each error vector, radians, computed
-        as arctan2(dx, dy) on the (x, y) pixel error vector;
+        'gaze_err_angle' : direction of each error vector (from marker to
+        gaze), radians in (-pi, pi]: 0 = gaze above the marker, increasing
+        clockwise on the image (pi/2 = right, +/-pi = below, -pi/2 = left).
+        Same convention as `visualization.angle_hist` (which takes degrees:
+        ``angle_hist(np.degrees(error['gaze_err_angle']))``). Computed as
+        arctan2(dx, -dy) on the pixel error vector (image y increases
+        downward). NOTE: before 2026-10, this was arctan2(dx, dy) (0 = below,
+        counterclockwise); error files computed earlier use that convention.
         'gaze_err_image' : (vres, hres) interpolated error (degrees), NaN
         outside the validated area unless `extrapolate`; floored at the
         minimum point error;
@@ -193,9 +199,11 @@ def compute_error(marker,
     if len(marker_pos) < 4:
         raise ValueError('Too few points to compute error across visual field.')
 
-    # Angle of error
+    # Direction of error: 0 = up, clockwise on the image (image y points down),
+    # matching visualization.angle_hist
     err_vector = gz_image - vp_image
-    gaze_err_angle = np.arctan2(*err_vector.T)
+    dx, dy = err_vector.T
+    gaze_err_angle = np.arctan2(dx, -dy)
     if vertical_horizontal_smooth_error_resolution is None:
         vertical_horizontal_smooth_error_resolution = 0.25
     if not isinstance(vertical_horizontal_smooth_error_resolution, (list, tuple)):
