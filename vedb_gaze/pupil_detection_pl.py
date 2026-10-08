@@ -9,6 +9,7 @@ except:
     print("No pupil detection available; pupil_detectors library not present")
 import numpy as np
 import file_io
+import pathlib
 import time
 from .utils import dictlist_to_arraydict
 
@@ -34,10 +35,11 @@ def plabs_detect_pupil(
     ----------
     video_file : str
         eye video file in which to detect pupils. If `id` is None, the file
-        name must contain 'eye0' or 'eye1' (Pupil Labs convention).
-    timestamp_file : str
-        .npy file with one timestamp per video frame. Despite the default of
-        None, this is required (it is passed directly to `np.load`).
+        name (not the folder) must start with 'eye0' or 'eye1' (Pupil Labs
+        convention).
+    timestamp_file : str or pathlib.Path, optional
+        .npy file with one timestamp per video frame, by default None (no
+        'timestamp' field in the output)
     start_frame : int, optional
         first frame to process, by default None (start of video)
     end_frame : int, optional
@@ -50,8 +52,8 @@ def plabs_detect_pupil(
         default None (no progress bar)
     id : int, optional
         eye ID stored in the 'id' field of the output: 0 for eye0 (right eye)
-        or 1 for eye1 (left eye), by default None, which infers it from
-        `video_file`
+        or 1 for eye1 (left eye), by default None, which infers it from the
+        file name of `video_file`
     properties : dict, optional
         parameters for `pupil_detectors.Detector2D` (see Notes), by default
         None (detector defaults)
@@ -100,17 +102,25 @@ def plabs_detect_pupil(
     """
     scale = 1.0  # hard-coded to always load full-size video
     if id is None:
-        if 'eye0' in video_file:
+        # Infer eye id from the file name only (video_file may be a str or a
+        # pathlib.Path; folder names must not affect the result)
+        video_name = pathlib.Path(video_file).name
+        if video_name.startswith('eye0'):
             id = 0
-        elif 'eye1' in video_file:
+        elif video_name.startswith('eye1'):
             id = 1
         else:
-            raise ValueError("If video is not `eye0.mp4` or eye1.mp4`, per pupil labs conventions, then id kwarg must be specified!")
+            raise ValueError(f"Can't infer the eye id from video file name {video_name!r}: "
+                             "per Pupil Labs conventions it should start with 'eye0' (right "
+                             "eye) or 'eye1' (left eye). Otherwise pass `id=0` or `id=1`.")
     if progress_bar is None:
         def progress_bar(x):
             """Identity stand-in used when no progress bar is given."""
             return x
-    timestamps = np.load(timestamp_file)
+    if timestamp_file is None:
+        timestamps = None
+    else:
+        timestamps = np.load(timestamp_file)
     # Specify detection method later?
     if properties is None:
         properties = {}
