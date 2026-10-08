@@ -1,3 +1,8 @@
+"""Pupil detection with the Pupil Labs 2D detector (`pupil_detectors`).
+
+Provides `plabs_detect_pupil`, one of the functions that can be named by
+``config/pupil-<tag>.yaml`` and run by the `pipelines.pupil_detection` step.
+"""
 try:
     import pupil_detectors
 except:
@@ -20,20 +25,53 @@ def plabs_detect_pupil(
     sleep_time=0.001,
     **kwargs
     ):
-    """
-    This is a simple wrapper to allow Pupil Labs `pupil_detectors` code
-    to process a whole video of eye data.
+    """Detect pupils in every frame of an eye video with the Pupil Labs 2D detector
+
+    Simple wrapper allowing Pupil Labs `pupil_detectors.Detector2D` to process
+    a whole eye video, loaded in batches of up to ~4 GB.
+
     Parameters
     ----------
-    video_file : string
-        video file to parse for checkerboards
-    timestamp_file : string
-        timestamp file to accompany video file, with timestamps per frame
-    progress_bar : tqdm object or None
-        if tqdm object is provided, a progress bar is displayed
-        as the video is processed.
-    id : int, 0 or 1
-        ID for eye (eye0, i.e. left, or eye1, i.e. right)
+    video_file : str
+        eye video file in which to detect pupils. If `id` is None, the file
+        name must contain 'eye0' or 'eye1' (Pupil Labs convention).
+    timestamp_file : str
+        .npy file with one timestamp per video frame. Despite the default of
+        None, this is required (it is passed directly to `np.load`).
+    start_frame : int, optional
+        first frame to process, by default None (start of video)
+    end_frame : int, optional
+        frame at which to stop (exclusive), by default None (end of video)
+    batch_size : int, optional
+        number of frames to load at once, by default None, which uses as many
+        frames as fit in ~4 GB
+    progress_bar : callable or None, optional
+        e.g. `tqdm.tqdm`; wraps the per-frame loop to display progress, by
+        default None (no progress bar)
+    id : int, optional
+        eye ID stored in the 'id' field of the output: 0 for eye0 (right eye)
+        or 1 for eye1 (left eye), by default None, which infers it from
+        `video_file`
+    properties : dict, optional
+        parameters for `pupil_detectors.Detector2D` (see Notes), by default
+        None (detector defaults)
+    sleep_time : float, optional
+        seconds to sleep after each frame, by default 0.001
+    **kwargs
+        ignored
+
+    Returns
+    -------
+    pupil_data : dict of arrays
+        one entry per frame, with the fields returned by the Pupil Labs
+        detector (e.g. 'location' in pixels, 'confidence', 'ellipse',
+        'diameter'; 'internal_2d_raw_data' is removed) plus:
+        'norm_pos' : (n, 2) pupil position normalized 0-1 by eye video
+        width and height;
+        'luminance' : mean gray value of the frame;
+        'timestamp' : timestamp for the frame;
+        'id' : eye ID.
+
     Notes
     -----
     Parameters for Pupil Detector2D object, passed as a dict called
@@ -41,8 +79,7 @@ def plabs_detect_pupil(
         coarse_detection = True
         coarse_filter_min = 128
         coarse_filter_max = 280
-        intensity_
-        ge = 23
+        intensity_range = 23
         blur_size = 5
         canny_treshold = 160
         canny_ration = 2
@@ -60,14 +97,6 @@ def plabs_detect_pupil(
         final_perimeter_ratio_range_max = 1.0
         ellipse_true_support_min_dist = 3.0
         support_pixel_ratio_exponent = 2.0
-    Returns
-    -------
-    pupil_dicts : list of dicts
-        dictionary for each detected instance of a pupil. Each
-        entry has fields:
-        luminance
-        timestamp [if timestamps are provided, which they should be]
-        norm_pos
     """
     scale = 1.0  # hard-coded to always load full-size video
     if id is None:
@@ -78,7 +107,9 @@ def plabs_detect_pupil(
         else:
             raise ValueError("If video is not `eye0.mp4` or eye1.mp4`, per pupil labs conventions, then id kwarg must be specified!")
     if progress_bar is None:
-        def progress_bar(x): return x
+        def progress_bar(x):
+            """Identity stand-in used when no progress bar is given."""
+            return x
     timestamps = np.load(timestamp_file)
     # Specify detection method later?
     if properties is None:

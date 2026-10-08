@@ -1,4 +1,27 @@
 # Full pipelines for gaze estimation
+"""Pipeline steps and full workflows for gaze estimation.
+
+Each step function (`pupil_detection`, `marker_detection`,
+`marker_splitting`, `marker_clustering`, `compute_calibration`, `map_gaze`,
+`compute_error`) loads its parameters from
+``vedb_gaze/config/<step>-<param_tag>.yaml``. The YAML's ``fn`` key names
+the function or class to call (resolved by `utils.get_function`); the
+remaining keys are passed as kwargs. Results are saved as .npz files in an
+output directory, with file names built from the parameter tags
+(calibration and error file names include a blake2b hash of all upstream
+tags).
+
+Caching and failure handling: if a step's output file already exists, the
+step returns its path without recomputing. If a step fails, an empty
+``<name>.failed`` file is written and its path is returned (and returned
+again on later calls). Steps receiving any input path containing 'failed'
+return ``output_dir / 'previous_step.failed'`` without running.
+
+Workflows: `pipeline_vedb` (mobile VEDB sessions; requires a
+marker_times.yaml file with calibration / validation frame ranges) and
+`pipeline_mri` (fMRI eye tracking, BIDS-like folders). Default input and
+output folders (`BASE_DIR`, `PROC_DIR`) come from `options.config`.
+"""
 import numpy as np
 import tqdm
 import tqdm.notebook
@@ -49,6 +72,11 @@ def get_default_kwargs(fn):
     ----------
     fn : function
         function for which to get kws
+
+    Returns
+    -------
+    defaults : dict
+        {parameter name: default value} for parameters that have defaults
     """
     import inspect
     defaults = dict((name, param.default)
@@ -67,16 +95,38 @@ def pupil_detection(eye_video_file,
         is_verbose=False,
         **gpu_kwargs):
     """Run a pupil detection function as a pipeline step
-    
+
+    Parameters are loaded from ``config/pupil-<param_tag>.yaml``; its ``fn``
+    is called as ``fn(eye_video_file, timestamp_file=eye_time_file, **kwargs)``
+    and must return a dict of arrays including 'norm_pos'. Also used for
+    eyelid detection (with an eyelid `param_tag`).
+
     Parameters
     ----------
-    eye_vide_file : str
+    eye_video_file : str or pathlib.Path
         file to load in which to detect pupils
-    eye_time_file : str
+    eye_time_file : str or pathlib.Path
         file to load with timestamps for eye video (if separate)
+    param_tag : str
+        tag naming the parameter file
     output_dir : pathlib.Path or str
-        directory for 
+        directory for output file
+    eye : str, optional
+        'left' or 'right'; used in output file name, by default 'left'
+    base_output_name : str, optional
+        prefix for output file name, by default None (no prefix)
+    is_verbose : bool, optional
+        print step header, by default False
+    **gpu_kwargs
+        extra kwargs passed to `fn` (overriding YAML values), e.g. for GPU
+        settings
 
+    Returns
+    -------
+    fpath : pathlib.Path
+        ``output_dir / '[<base_output_name>_]pupil_detection-<eye>-<param_tag>.npz'``,
+        or the same name ending '.failed' if no pupils were returned. An
+        existing output (or .failed) file is returned without recomputing.
     """
     if is_notebook():
         progress_bar = tqdm.notebook.tqdm
@@ -129,6 +179,44 @@ def detrend_pupil(
                 base_output_name=None,
                 is_verbose=False,
                 ):
+    """PLACEHOLDER pipeline step for removing drift in pupil estimates.
+
+    Placeholder for future code to remove gradual drift in pupil position
+    estimates caused by slippage of the eye-tracking rig on the head. This
+    step is not run by default (``pupil_detrend_tag=None`` in
+    `pipeline_vedb` and `pipeline_mri`) and is NOT currently functional.
+    Before it can be enabled it needs:
+
+    (a) an `output_dir` parameter (the body references `output_dir`, which
+        is not currently a parameter);
+    (b) the call site in `pipeline_vedb` to store results per eye
+        (``pupil_detrend[eye] = ...``; it currently overwrites the dict);
+    (c) a ``config/detrend_pupil-<tag>.yaml`` file whose ``fn`` accepts
+        ``(pupil_file, eyelid_file, **kwargs)`` and returns a dict with
+        'norm_pos'.
+
+    Parameters
+    ----------
+    pupil_file : pathlib.Path
+        output file of the pupil detection step
+    eyelid_file : pathlib.Path
+        output file of the eyelid detection step
+    param_tag : str
+        tag naming ``config/detrend_pupil-<param_tag>.yaml``
+    eye : str
+        'left' or 'right'; used in output file name
+    base_output_name : str, optional
+        prefix for output file name, by default None
+    is_verbose : bool, optional
+        print step header, by default False
+
+    Returns
+    -------
+    fpath : pathlib.Path
+        intended: ``output_dir / '[<base_output_name>_]pupil_detrended-<eye>-<param_tag>.npz'``,
+        or a failed-run marker file, following the caching conventions of the
+        other steps
+    """
     # assure `output_dir` is a pathlib object
     output_dir = pathlib.Path(output_dir)
     # Check for extant file / failed run
@@ -172,13 +260,43 @@ def marker_detection(video_file,
                      end_frame=None,
                      epoch=None,
                      is_verbose=False):
-    """Run a pupil detection function as a pipeline step
-    
+    """Run a marker detection function as a pipeline step
+
+    Parameters are loaded from ``config/marker-<param_tag>.yaml``; its ``fn``
+    is called as ``fn(video_file, time_file, start_frame=start_frame,
+    end_frame=end_frame, **kwargs)`` and must return a dict of arrays
+    including 'norm_pos' (see `marker_detection.find_concentric_circles`,
+    `marker_detection.find_checkerboard`).
+
     Parameters
     ----------
-    session folder : str
-        folder for eye video session to run
+    video_file : str or pathlib.Path
+        world video file
+    time_file : str or pathlib.Path
+        world timestamp (.npy) file
+    param_tag : str
+        tag naming the parameter file
+    output_dir : pathlib.Path or str
+        directory for output file
+    start_frame : int, optional
+        first frame to search, by default None (start of video). If given,
+        the YAML must not also set a non-null 'start_frame' (ValueError).
+    end_frame : int, optional
+        frame at which to stop, by default None (end of video); same
+        restriction as `start_frame`
+    epoch : int, optional
+        epoch number, used only in output file name, by default None
+        ('epochall')
+    is_verbose : bool, optional
+        print step header, by default False
 
+    Returns
+    -------
+    fpath : pathlib.Path
+        ``output_dir / 'markers-<param_tag>-epoch<NN>.npz'`` (or
+        'epochall'), or the same name ending '.failed' if no markers were
+        found. An existing output (or .failed) file is returned without
+        recomputing.
     """
     # For detections, check for extant output file:
     if epoch is None:
@@ -245,7 +363,37 @@ def marker_splitting(marker_file,
         param_tag,
         output_dir,
         is_verbose=False):
-    """"""
+    """Split marker detections into multiple epochs as a pipeline step
+
+    Not used by `pipeline_vedb`, which splits epochs using marker_times.yaml
+    instead. Parameters are loaded from
+    ``config/marker_parsing-<param_tag>.yaml``; its ``fn`` (e.g.
+    `marker_parsing.filter_and_split`) is called as
+    ``fn(marker_data, all_timestamps, **kwargs)`` and must return a list of
+    dicts of arrays, one per epoch.
+
+    Parameters
+    ----------
+    marker_file : pathlib.Path
+        output of `marker_detection`, named 'markers-<tag>-<epoch>.npz'
+    time_file : str or pathlib.Path
+        world timestamp (.npy) file
+    param_tag : str
+        tag naming the parameter file
+    output_dir : pathlib.Path or str
+        directory for output files
+    is_verbose : bool, optional
+        print step header, by default False
+
+    Returns
+    -------
+    fnames : list or pathlib.Path
+        list of paths ``output_dir / 'marker-<orig_tag>-<param_tag>-epoch<NN>.npz'``,
+        one per epoch (existing files matching this pattern are returned
+        without recomputing). On failure, a one-element list with a
+        '.failed' file name (str, not full path). If `marker_file` is a
+        failed file, ``output_dir / 'previous_step.failed'``.
+    """
     if is_notebook():
         progress_bar = tqdm.notebook.tqdm
     else:
@@ -306,7 +454,35 @@ def marker_clustering(marker_file,
         param_tag,
         output_dir,
         is_verbose=False):
-    """"""
+    """Filter and cluster marker detections for one epoch as a pipeline step
+
+    Parameters are loaded from ``config/marker_parsing-<param_tag>.yaml``;
+    its ``fn`` (e.g. `marker_parsing.filter_and_cluster`) is called as
+    ``fn(marker_data, all_timestamps, **kwargs)`` and must return a dict of
+    arrays (or None for failure). Any exception raised by ``fn`` is also
+    treated as a failure.
+
+    Parameters
+    ----------
+    marker_file : pathlib.Path
+        output of `marker_detection`, named 'markers-<orig_tag>-<epoch>.npz'
+    time_file : str or pathlib.Path
+        world timestamp (.npy) file
+    param_tag : str
+        tag naming the parameter file
+    output_dir : pathlib.Path or str
+        directory for output file
+    is_verbose : bool, optional
+        print step header, by default False
+
+    Returns
+    -------
+    fpath : pathlib.Path
+        ``output_dir / 'markers-<orig_tag>-<param_tag>-<epoch>.npz'``, or the
+        same name ending '.failed' on failure; ``output_dir /
+        'previous_step.failed'`` if `marker_file` is a failed file. An
+        existing output (or .failed) file is returned without recomputing.
+    """
     if is_verbose:
         print(f"\n=== Finding marker epochs ({param_tag}) ===\n")
     if is_notebook():
@@ -370,15 +546,43 @@ def compute_calibration(marker_file,
                         output_dir,
                         eye=None,
                         is_verbose=False):
-    """
-    pupil_files can be list of [left, right]. This should be a dict to be more explicit.
-    param_tag should be informative;
-    params it points to specify:
-        calibration_type
-        min_confidence
-        (lambda)
-        (etc)
-    
+    """Compute a calibration as a pipeline step
+
+    Parameters are loaded from ``config/calibration-<param_tag>.yaml``; its
+    ``fn`` names a class (normally `calibration.Calibration`) constructed as
+    ``fn(pupil_data, marker_data, video_dimensions, **kwargs)``, with kwargs
+    such as `calibration_type`, `min_calibration_confidence`,
+    `cluster_reduce_fn`, `lambd_list`. Any exception during construction is
+    treated as a failure.
+
+    Parameters
+    ----------
+    marker_file : pathlib.Path
+        clustered calibration marker file (`marker_clustering` output)
+    pupil_files : pathlib.Path or list
+        pupil detection file, or [left, right] files for a binocular
+        calibration. (This should be a dict to be more explicit.)
+    input_hash : str
+        hash of upstream step tags, used in output file name
+    param_tag : str
+        tag naming the parameter file; should be informative
+    video_dimensions : tuple
+        world video (width, height) in pixels
+    output_dir : pathlib.Path or str
+        directory for output file
+    eye : str, optional
+        'left', 'right', or 'both'; used in output file name, by default None
+    is_verbose : bool, optional
+        print step header, by default False
+
+    Returns
+    -------
+    fpath : pathlib.Path
+        ``output_dir / 'calibration-<eye>-<param_tag>-<input_hash>.npz'``
+        (saved with `Calibration.save`), or the same name ending '.failed'
+        on failure; ``output_dir / 'previous_step.failed'`` if any input is a
+        failed file. An existing output (or .failed) file is returned
+        without recomputing.
     """
     # Handle inputs
     if not isinstance(pupil_files, (list, tuple)):
@@ -436,7 +640,40 @@ def map_gaze(pupil_files,
              output_dir,
              base_output_name=None,
              is_verbose=False):
-    """Estimate gaze from calibration & pupil positions"""
+    """Estimate gaze from calibration & pupil positions as a pipeline step
+
+    Parameters are loaded from ``config/gaze-<param_tag>.yaml``; its ``fn``
+    (e.g. `gaze_mapping.gaze_mapper`) is called as
+    ``fn(calibration, pupil_data, **kwargs)`` with the loaded
+    `calibration.Calibration` and must return a dict of arrays.
+
+    Parameters
+    ----------
+    pupil_files : pathlib.Path or list
+        pupil detection file, or [left, right] files for a binocular
+        calibration
+    calibration_file : pathlib.Path
+        output of `compute_calibration`, named
+        'calibration-<eye>-<calibration_tag>-<input_hash>.npz'
+    param_tag : str
+        tag naming the parameter file
+    output_dir : pathlib.Path or str
+        directory for output file
+    base_output_name : str, optional
+        prefix for output file name, by default None
+    is_verbose : bool, optional
+        print step header, by default False
+
+    Returns
+    -------
+    fpath : pathlib.Path
+        ``output_dir / '[<base_output_name>_]gaze-<eye>-<param_tag>-<calibration_tag>-<input_hash>.npz'``
+        (eye, calibration_tag and input_hash taken from the calibration file
+        name), or the same name ending '.failed' if `fn` returns an empty
+        dict; ``output_dir / 'previous_step.failed'`` if any input is a
+        failed file. An existing output (or .failed) file is returned
+        without recomputing.
+    """
     # assure `output_dir` is a pathlib object
     output_dir = pathlib.Path(output_dir)
     # Handle inputs
@@ -499,6 +736,44 @@ def compute_error(gaze_file,
              base_output_name=None,
              eye=None,
              is_verbose=False):
+    """Compute gaze error at validation markers as a pipeline step
+
+    Parameters are loaded from ``config/error-<param_tag>.yaml``; its ``fn``
+    (e.g. `error_computation.compute_error`) is called as
+    ``fn(marker_data, gaze_data, **kwargs)`` and must return a dict of
+    arrays. `np.linalg.LinAlgError` or `ValueError` raised while loading
+    inputs or computing error count as failure (other exceptions propagate).
+
+    Parameters
+    ----------
+    gaze_file : pathlib.Path
+        output of `map_gaze`
+    marker_file : pathlib.Path
+        validation markers (clustered marker file, or for MRI a fixed
+        marker file)
+    param_tag : str
+        tag naming the parameter file
+    output_dir : pathlib.Path or str
+        directory for output file
+    input_hash : str
+        hash of all upstream step tags, used in output file name
+    base_output_name : str, optional
+        prefix for output file name, by default None
+    eye : str, optional
+        'left', 'right' or 'both'; used in output file name, by default None
+    is_verbose : bool, optional
+        print step header, by default False
+
+    Returns
+    -------
+    fpath : pathlib.Path
+        ``output_dir / '[<base_output_name>_]error-<eye>-<param_tag>-<input_hash>[-<epoch>].npz'``,
+        where '-<epoch>' is the last '-'-separated element of the marker file
+        name if it has at least 3 such elements; or the same name ending
+        '.failed' on failure; ``output_dir / 'previous_step.failed'`` if any
+        input is a failed file. An existing output (or .failed) file is
+        returned without recomputing.
+    """
     if is_verbose:
         print("\n=== Computing error ===\n")
     # assure `output_dir` is a pathlib object
@@ -563,8 +838,20 @@ def split_time(marker_time_file, marker_type):
     """Takes as input marker_times.yaml and a key ('calibration_frames' or 'validation_frames'
     (note these are intentionally vedb specific), returns indices for epochs
 
+    Parameters
+    ----------
+    marker_time_file : str or pathlib.Path
+        marker_times.yaml file; `marker_type` key holds a list of
+        [start_frame, end_frame] pairs, one per epoch
     marker_type : str
         either 'calibration_frames' or 'validation_frames'
+
+    Returns
+    -------
+    epochs, start_frames, end_frames : lists
+        epoch numbers (0, 1, ...) and start / end frames (world video frame
+        indices). All empty if `marker_type` is absent, or if there is a
+        single epoch whose start equals its end (placeholder for "none").
     """
     marker_times = utils.read_yaml(marker_time_file)
     if marker_type not in marker_times:
@@ -583,6 +870,25 @@ def split_time(marker_time_file, marker_type):
 
 
 def check_files(output_dir, template, key_list=None):
+    """Find existing files in `output_dir` matching a glob pattern
+
+    Parameters
+    ----------
+    output_dir : pathlib.Path
+        directory to search
+    template : str
+        glob pattern; if `key_list` is given, a %-format string filled with
+        each key
+    key_list : list, optional
+        keys with which to fill `template`, by default None
+
+    Returns
+    -------
+    files_out : list or dict of lists
+        sorted matching paths (dict keyed by `key_list` entries if given)
+    failed_files : list or dict of lists
+        booleans, True where the file name contains 'failed'
+    """
     if key_list is None:
         files_out = sorted(list(output_dir.glob(template)))
         failed_files = ['failed' in x.name for x in files_out]
@@ -621,16 +927,75 @@ def pipeline_vedb(session,
     This contains assumptions for file structures related to VEDB, i.e. that world video
     and eye video files will have certain names and be in certain locations.
 
-    It splits epochs based on EITHER a marker_times.yaml file (if it exists) or by 
-    epoch splitting based on assumptions (see marker_parsing.py)
+    Epochs are intended to be split based on EITHER a marker_times.yaml file
+    or by automatic splitting (see marker_parsing.py), but currently a
+    marker_times.yaml file in the session folder is required
+    (NotImplementedError otherwise); its 'calibration_frames' and
+    'validation_frames' entries give [start, end] world-video frames for each
+    epoch. Calibration markers are detected and clustered for
+    `calibration_epoch` only; validation markers for all validation epochs.
+
+    Input files expected in ``input_base / session``: eye1.mp4 (left),
+    eye0.mp4 (right), eye<N>_timestamps_0start.npy, worldPrivate.mp4,
+    world_timestamps_0start.npy, marker_times.yaml. All outputs go to
+    ``output_base / session`` (created if needed). Each step is skipped if
+    its tag is None. Calibration type (binocular or monocular, per eye) is
+    inferred from whether 'binocular' or 'monocular' is in `calibration_tag`.
 
     Parameters
     ----------
-    session is a string identifier for a vedb session, e.g. '2021_02_27_10_12_44'
+    session : str
+        identifier (folder name) for a vedb session, e.g. '2021_02_27_10_12_44'
+    pupil_tag : str, optional
+        tag for ``config/pupil-<tag>.yaml``, by default 'pylids_pytorch_pupils_v1'
+    eyelid_tag : str, optional
+        tag for eyelid detection (also a ``config/pupil-<tag>.yaml``), by
+        default 'pylids_pytorch_eyelids_v1'
+    pupil_detrend_tag : str, optional
+        placeholder step (see `detrend_pupil`); leave as None, by default None
+    calibration_marker_tag : str, optional
+        tag for ``config/marker-<tag>.yaml`` for calibration markers, by
+        default 'circles_halfres'
+    calibration_split_tag : str, optional
+        unused except in the input hash, by default None
+    calibration_cluster_tag : str, optional
+        tag for ``config/marker_parsing-<tag>.yaml``, by default 'cluster_circles'
+    validation_marker_tag : str, optional
+        tag for ``config/marker-<tag>.yaml`` for validation markers, by
+        default 'checkerboard_halfres_4x7squares'
+    validation_split_tag : str, optional
+        unused except in the input hash, by default None
+    validation_cluster_tag : str, optional
+        tag for ``config/marker_parsing-<tag>.yaml``, by default 'cluster_checkerboards'
+    calibration_tag : str, optional
+        tag for ``config/calibration-<tag>.yaml``, by default
+        'monocular_tps_cv_cluster_median_conf75_cut3std'
+    gaze_tag : str, optional
+        tag for ``config/gaze-<tag>.yaml``, by default 'default_mapper'
+    error_tag : str, optional
+        tag for ``config/error-<tag>.yaml``, by default
+        'smooth_tps_cv_clust_med_outlier4std_conf75'
+    calibration_epoch : int, optional
+        which calibration epoch in marker_times.yaml to use, by default 0
+    input_base : pathlib.Path, optional
+        folder containing session folders, by default `BASE_DIR`
+    output_base : pathlib.Path, optional
+        folder for output session folders, by default `PROC_DIR`
+    is_verbose : bool, optional
+        print step headers, by default False
+    gpu_kwargs : dict, optional
+        extra kwargs for the pupil and eyelid detection functions, by default None
 
-    'eyes' input is used for calibration, gaze, & error estimation, when we may use average
-    or binocular estimates of gaze. Calibration is handled separately from this parameter, 
-    because gaze may be simply an average of two separte 
+    Returns
+    -------
+    outputs : dict
+        paths to step outputs (or '.failed' files): 'pupils' ({eye: path}),
+        'pupil_detrend', 'calibration_markers', 'calibration_markers_clustered',
+        'validation_markers' (list, one per epoch),
+        'validation_markers_clustered' (list), 'calibration' ({eye: path},
+        eye is 'left'/'right' or 'both'), 'gaze' ({eye: path}), 'error'
+        ({eye: list of paths, one per validation epoch}). Eyelid outputs are
+        computed but not returned.
     """
     # Input folder
     input_dir = input_base.expanduser() / session
@@ -798,6 +1163,9 @@ def pipeline_vedb(session,
                     **gpu_kwargs, # Allow inputs specific to GPU as inputs to pipeline
                     )
             
+    # PLACEHOLDER step (see `detrend_pupil` docstring): not functional; leave
+    # `pupil_detrend_tag` as None. Note this loop overwrites `pupil_detrend`
+    # instead of storing per eye (should be `pupil_detrend[eye] = ...`).
     pupil_detrend = {}
     if pupil_detrend_tag is not None:
         for eye in ['left', 'right']:
@@ -939,16 +1307,61 @@ def pipeline_mri(base_dir,
                 - gaze
                     |
                     - <all outputs here>
-    It splits epochs based on EITHER a marker_times.yaml file (if it exists) or by 
-    epoch splitting based on assumptions (see marker_parsing.py)
+    Each video <name>_<eye>.mp4 must have a timestamp file <name>.npy in the
+    same folder. Videos with 'calibration' in the name are calibration runs:
+    run `calibration_epoch` is used to compute the calibration, and the
+    others (or `validation_epoch`) are mapped to gaze and used to compute
+    error. Calibration marker positions are not detected; they are read from
+    `calibration_marker_file`. Outputs are prefixed by the video base name.
 
     Parameters
     ----------
-    session is a string identifier for a vedb session, e.g. '2021_02_27_10_12_44'
+    base_dir : pathlib.Path
+        base folder (see structure above); must be a pathlib.Path
+    subject_id : str
+        subject folder name
+    task : str or None
+        task name to select main-experiment videos; None selects all
+        non-calibration videos
+    session : str
+        session label (folder is 'ses-<session>')
+    calibration_marker_file : pathlib.Path or None
+        .npz file of calibration marker positions; None uses
+        ``base_dir / 'calibration_markers.npz'``
+    eyes : tuple or str, optional
+        eyes to process, by default ('left', 'right')
+    pupil_tag : str, optional
+        tag for ``config/pupil-<tag>.yaml``, by default 'pylids_pytorch_pupils_v1'
+    pupil_detrend_tag : str, optional
+        placeholder step (see `detrend_pupil`); leave as None. Only used in
+        the input hashes here; by default None
+    calibration_tag : str, optional
+        tag for ``config/calibration-<tag>.yaml``, by default
+        'monocular_tps_cv_cluster_median_conf75_cut3std'
+    gaze_tag : str, optional
+        tag for ``config/gaze-<tag>.yaml``, by default 'default_mapper'
+    error_tag : str, optional
+        tag for ``config/error-<tag>.yaml``, by default
+        'smooth_tps_cv_clust_med_outlier4std_conf75_fov12mri'
+    calibration_epoch : int, optional
+        index of calibration run used to compute calibration, by default 0
+    validation_epoch : int, list or None, optional
+        index (or indices) of calibration runs used for validation, by
+        default None (all calibration runs except `calibration_epoch`)
+    evaluate_runs : list of int, optional
+        indices of main-experiment runs to process, by default None (all)
+    is_verbose : bool, optional
+        print step headers, by default False
+    video_dimensions : tuple, optional
+        (width, height) passed to the calibration, by default (800, 600)
 
-    'eyes' input is used for calibration, gaze, & error estimation, when we may use average
-    or binocular estimates of gaze. Calibration is handled separately from this parameter, 
-    because gaze may be simply an average of two separte 
+    Returns
+    -------
+    outputs : dict
+        paths to step outputs (or '.failed' files): 'pupils_main' and
+        'pupils_cal' ({eye: list of paths}), 'calibration' ({eye: path}),
+        'gaze_val' and 'gaze_main' ({eye: list of paths}), 'error'
+        ({eye: list of paths, one per validation run})
     """
 
     if isinstance(eyes, str):

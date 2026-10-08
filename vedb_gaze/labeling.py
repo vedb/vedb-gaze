@@ -1,6 +1,21 @@
 # vedb_gaze_labeling
 
 # Blink detection WIP
+"""Eye-movement and blink labeling for VEDB gaze and pupil data.
+
+This module operates on outputs of the gaze pipeline (pupil detection and
+gaze mapping) to label events in time:
+
+- Blinks: from eyelid distance computed from `pylids` (DeepLabCut) eyelid
+  keypoints (`get_eyelid_distance`, `detect_blinks`), or from drops in
+  pupil detection confidence (`detect_blinks_confidence`).
+- Saccades: by a fixed eye-velocity threshold (`find_saccades`) or with the
+  adaptive REMoDNaV algorithm (`find_saccades_remodnav`).
+- Helpers to manipulate event (onset, offset, duration) arrays, compute
+  event rates, remove blink periods from data, and plot blinks.
+
+Several functions here are work in progress (see notes in docstrings).
+"""
 import plot_utils
 import numpy as np
 import matplotlib.pyplot as plt
@@ -43,14 +58,19 @@ def buffer_onoff(onoff, buffer_time):
 
     Parameters
     ----------
-    onoff: array-like
+    onoff : array-like
         array or list with tuples, each row (or item of list) should be
         (onset, offset, duration)
-    buffer time : scalar, array-like
-        if scalar, same `buffer_time` is added before onsets & after offsets
-        if tuple, list, or array, should be 2 long, with separate values
-        for pre-onset and post-offset buffers
+    buffer_time : scalar, list, or tuple
+        if scalar, same `buffer_time` is added before onsets & after offsets.
+        if tuple or list, should be 2 long, with separate values
+        for pre-onset and post-offset buffers. (A numpy array is NOT
+        unpacked; it is treated like a scalar.) Same units as `onoff`.
 
+    Returns
+    -------
+    array
+        (n, 3) array of (onset - pre, offset + post, duration + pre + post)
     """
     if isinstance(buffer_time, (list, tuple)):
         pre, post = buffer_time
@@ -71,19 +91,29 @@ def remove_outliers(timestamps, data,
 
     Parameters
     ----------
-    timestamps : array-like
+    timestamps : np.ndarray
         timestamps associated with each data point (timestamps associated
         with outlying data points are also removed)
-    data : array-like
-        data in which to search for outliers
-    z_threshold : scalar, optional
-        threshold for z score for outliers, by default 4
+    data : np.ndarray
+        1D data in which to search for outliers
+    z_max : scalar or None, optional
+        maximum z score (computed over all of `data`) to keep, by default 4.
+        If `z_min` is None, points with abs(z) > `z_max` are removed
+        (symmetric threshold). None to skip z-score thresholding.
+    z_min : scalar or None, optional
+        minimum z score to keep, by default None (use -`z_max`). Set to
+        -np.inf to only remove high outliers.
     absolute_min : scalar, optional
         absolute minimum threshold below which points will be considered
         outliers; None for skip this, by default None
     absolute_max : scalar, optional
         absolute maximum threshold above which points will be considered
         outliers; None for skip this, by default None
+
+    Returns
+    -------
+    timestamps, data : np.ndarray
+        inputs with outlying points removed
     """
     keep = np.ones_like(data) > 0
     # First, remove absolute threshold out-of-bounds
@@ -103,11 +133,35 @@ def remove_outliers(timestamps, data,
 def compute_eye_velocity(gaze, max_size_deg=125, aspect_ratio=4/3):
     """Compute eye velocity from gaze
 
-    Recommend filter blinks first? Nan out? Do NOT filter, then compare notes
-    across blink and saccade detection?
+    Gaze position is converted to approximate degrees by scaling normalized
+    (0-1) world camera coordinates by the field of view, assuming degrees
+    are linear across the world camera image (not true for the fisheye
+    lens). Velocity is the norm of the spatial gradient divided by the
+    temporal gradient (`np.gradient`), so samples need not be uniform.
 
-    Weight by confidence?
+    Parameters
+    ----------
+    gaze : dict
+        gaze arraydict with 'timestamp' (seconds), 'norm_pos' ((n, 2),
+        normalized 0-1 world camera coordinates), and 'confidence' fields
+        ('confidence' is required but currently unused)
+    max_size_deg : scalar, optional
+        horizontal size of world camera field of view in degrees, by
+        default 125
+    aspect_ratio : scalar, optional
+        world camera aspect ratio (width / height); vertical size in degrees
+        is `max_size_deg` / `aspect_ratio`, by default 4/3
 
+    Returns
+    -------
+    np.ndarray
+        (n,) eye velocity in (approximate) degrees per second
+
+    Notes
+    -----
+    Open questions from development: should blinks be filtered (or set to
+    NaN) first? Should velocity be weighted by confidence? Currently neither
+    is done.
     """
     t = np.array(gaze['timestamp'])
     x, y = np.array(gaze['norm_pos']).T
@@ -139,6 +193,13 @@ def assure_positive(pca, verbose=False):
         pca object that has already been fit
     verbose : bool
         verbosity setting (True = talkative)
+
+    Returns
+    -------
+    sklearn.decomposition.PCA object
+        the same object, with the sign of the first two components flipped
+        (in place) if needed so that the largest-magnitude element of each
+        is positive
     """
     # Assure positive PCs
     j = np.argmax(np.abs(pca.components_[0]))
@@ -155,6 +216,27 @@ def assure_positive(pca, verbose=False):
 
 def get_major_minor_axes_pca(pupil_data, n_points=1000, assure_positive_pcs=True):
     """Estimates PCA to compute major and minor axes of the eye across all frames
+
+    Upper and lower eyelid keypoints (split by `pylids.utils.parse_keypoints`)
+    from `n_points` evenly spaced frames are pooled, and a 2D PCA is fit to
+    their (x, y) coordinates. The first PC approximates the eye's long
+    (corner-to-corner) axis. Requires `pylids`.
+
+    Parameters
+    ----------
+    pupil_data : dict
+        pupil detection arraydict with 'dlc_kpts_x' and 'dlc_kpts_y' fields
+        (per-frame arrays of keypoint coordinates in eye image space)
+    n_points : int, optional
+        number of frames (evenly spaced across the data) to use, by default
+        1000
+    assure_positive_pcs : bool, optional
+        whether to flip PC signs with `assure_positive`, by default True
+
+    Returns
+    -------
+    sklearn.decomposition.PCA object
+        PCA fit to eyelid keypoint coordinates
     """
     if not has_pylids:
         raise ImportError("No pylids module, please install.")
@@ -175,18 +257,40 @@ def get_major_minor_axes_pca(pupil_data, n_points=1000, assure_positive_pcs=True
 
 
 def get_eyelid_distance_coarse_to_fine(x_new, coefs_up, coefs_lo, eyelid_resolution_coarse=100, eyelid_resolution_fine=100):
-    """Searches for maximum distance b/w eyelids and uses that as the 
-    distance b/w eyelids. First finds max distance for 100 points along
-    the eyelid (coarse) then searches for 100 points in the neighbourhood 
-    (fine) of this point.
+    """Searches for maximum distance b/w eyelids (for one frame) and uses
+    that as the distance b/w eyelids.
 
-    Args:
-        x_new (array):   
-        coefs_up (array): polynomial coeffs for upper eyelid
-        coefs_lo (array): polynomial coeffs for lower eyelid
+    First evaluates the vertical distance between upper and lower eyelid
+    polynomials at `eyelid_resolution_coarse` points spanning `x_new`, then
+    re-samples `eyelid_resolution_fine` points in the interval between the
+    coarse sample before the maximum and the maximum.
 
-    Returns:
-        dist_eyelids (array): distance b/w eyelids for each frame
+    Parameters
+    ----------
+    x_new : array-like
+        x coordinates of the fitted eyelid; only the first and last values
+        (the x range) are used
+    coefs_up : array-like
+        polynomial coefficients for upper eyelid (lowest order first, as
+        used by `numpy.polynomial.polynomial.polyval`)
+    coefs_lo : array-like
+        polynomial coefficients for lower eyelid (same format)
+    eyelid_resolution_coarse : int, optional
+        number of points for coarse search, by default 100
+    eyelid_resolution_fine : int, optional
+        number of points for fine search, by default 100
+
+    Returns
+    -------
+    np.ndarray
+        1-element array with the maximum eyelid distance for this frame
+        (same units as the eyelid coordinates)
+
+    Notes
+    -----
+    The fine search interval is [x[argmax - 1], x[argmax]], i.e. only on one
+    side of the coarse maximum; if the coarse maximum is at index 0, index
+    -1 wraps around to the last coarse sample.
     """
     dist_ilid = []
     dist_coarse = np.zeros(eyelid_resolution_coarse)
@@ -222,7 +326,52 @@ def get_eyelid_distance(pupil_data,
                            coarse_to_fine_estimate=False,
                            progress_bar=tqdm.notebook.tqdm,
                           ):
-    """TODO: docstring
+    """Compute distance between upper and lower eyelids for each frame
+
+    For each frame, eyelid keypoints are (optionally) rotated into the
+    principal axes of the eye, upper and lower eyelid curves are fit with
+    `pylids.fit_eyelid`, and the maximum vertical distance between the
+    curves is taken as the eyelid distance. Requires `pylids`.
+
+    Parameters
+    ----------
+    pupil_data : dict
+        pupil detection arraydict with 'dlc_kpts_x', 'dlc_kpts_y', and
+        'dlc_confidence' fields (per-frame keypoint arrays from pylids).
+        Frames with 48 keypoints use the 'eyelid_pupil' model type and
+        frames with 32 keypoints use the 'eyelid' model type.
+    eyelid_resolution_coarse : int, optional
+        number of points for coarse search, by default 100; only used if
+        `coarse_to_fine_estimate` is True
+    eyelid_resolution_fine : int, optional
+        number of points for fine search, by default 100; only used if
+        `coarse_to_fine_estimate` is True
+    align_eye_pca : bool, optional
+        whether to rotate keypoints into the eye's principal axes (see
+        `get_major_minor_axes_pca`) before fitting, so that distances are
+        measured perpendicular to the long axis of the eye, by default True
+    n_points_pca : int, optional
+        number of frames used to fit the PCA, by default 1000
+    idx : array-like or None, optional
+        indices of frames to process, by default None (all frames)
+    assure_positive_pcs : bool, optional
+        passed to `get_major_minor_axes_pca`, by default True
+    save_fits : bool, optional
+        whether to accumulate eyelid fits, by default False. NOTE: fits
+        are collected but currently not returned.
+    coarse_to_fine_estimate : bool, optional
+        if True, use `get_eyelid_distance_coarse_to_fine` on the fitted
+        polynomials; if False (default, much faster), use the max absolute
+        difference between the fitted upper and lower eyelid curves
+    progress_bar : callable, optional
+        progress bar wrapper for the frame loop, by default
+        tqdm.notebook.tqdm
+
+    Returns
+    -------
+    np.ndarray
+        eyelid distance for each frame in `idx`, in eye image keypoint units
+        (pixels). Shape (n,), or (n, 1) if `coarse_to_fine_estimate` is True.
     """
     if not has_pylids:
         raise ImportError("No pylids module, please install.")    
@@ -286,6 +435,9 @@ sig_end = 3 * 0.19 # ??
 m = 0.02 # mean
 negative_velocity_threshold = m - sig_str
 positive_velocity_threshold = m + sig_end
+# NOTE: the module-level thresholds above are not used as defaults by the
+# functions below, which default to -2.4 / +2.4 (fraction of max eye
+# opening per second).
 
 def _detect_blinks_eyevel(dist_eyelid, 
     fps=120, 
@@ -297,9 +449,48 @@ def _detect_blinks_eyevel(dist_eyelid,
     max_full_blink_time = 500,
     negative_velocity_threshold=-2.4,
     positive_velocity_threshold=2.4,
-    ): 
-    """
-    Note: All parameter times in milliseconds
+    ):
+    """Label blinks in a uniformly sampled eyelid distance signal by eyelid velocity
+
+    A blink is a run of samples with eyelid velocity <=
+    `negative_velocity_threshold` (closing), followed by samples with
+    velocity between the two thresholds (closed), followed by samples with
+    velocity >= `positive_velocity_threshold` (opening), with each phase
+    and the whole blink satisfying the duration limits below.
+
+    Parameters
+    ----------
+    dist_eyelid : np.ndarray
+        1D eyelid distance, uniformly sampled at `fps`. If its max is > 1,
+        it is divided by its max (so it is a fraction of max opening).
+    fps : scalar, optional
+        sampling rate of `dist_eyelid` in Hz, by default 120
+    min_eye_closing_time, max_eye_closing_time : scalar, optional
+        exclusive limits on closing phase duration in ms, by default 10, 250
+    max_full_closure_time : scalar, optional
+        intended maximum duration (ms) of the closed phase, by default 17.
+        As implemented this check never rejects a blink (see Notes).
+    min_eye_opening_time : scalar, optional
+        minimum duration (ms) of the opening phase, by default 30
+    min_full_blink_time, max_full_blink_time : scalar, optional
+        exclusive limits on whole blink duration in ms, by default 16, 500
+    negative_velocity_threshold : scalar, optional
+        eyelid velocity (fraction of max opening per second) at or below
+        which the eye is considered closing, by default -2.4
+    positive_velocity_threshold : scalar, optional
+        eyelid velocity (fraction of max opening per second) above which
+        the eye is considered opening, by default 2.4
+
+    Returns
+    -------
+    np.ndarray
+        (n,) float array, 1 for samples labeled as blinks, 0 otherwise
+
+    Notes
+    -----
+    Durations are computed as (number of samples) * 1000 / `fps`. The
+    closed-phase check computes (blink_mid - blink_end), which is never
+    positive, so `max_full_closure_time` has no effect.
     """
     # Z-score and scale resulting range to -1 to 1
     # eyelid_velocity = pylids.filter_scale_blinks(dist_eyelid)
@@ -369,9 +560,57 @@ def detect_blinks(pupil_data,
                   max_eye_opening=None,
                   idx=None
                  ):
-    """
-    All closing, opening, blink times in ms
-    velocity should be converted to % closure / second
+    """Detect blinks from eyelid distance (pylids eyelid keypoints)
+
+    Steps: (1) compute eyelid distance per frame with `get_eyelid_distance`
+    (default settings); (2) remove outliers (distance outside
+    [0, `absolute_max_distance`] or z score > `outlier_z_max`); (3) resample
+    to a uniform `fps` with a smoothing thin-plate spline (smoothing=0.001,
+    neighbors=7); (4) express distance as a fraction of `max_eye_opening`;
+    (5) label blinks by eyelid velocity with `_detect_blinks_eyevel`.
+    Requires `pylids`.
+
+    Parameters
+    ----------
+    pupil_data : dict
+        pupil detection arraydict with 'timestamp', 'dlc_kpts_x',
+        'dlc_kpts_y', and 'dlc_confidence' fields
+    fps : scalar, optional
+        sampling rate (Hz) to which eyelid distance is resampled, by
+        default 120
+    min_eye_closing_time, max_eye_closing_time, max_full_closure_time,
+    min_eye_opening_time, min_full_blink_time, max_full_blink_time : scalar, optional
+        duration limits in milliseconds; see `_detect_blinks_eyevel`
+    negative_velocity_threshold, positive_velocity_threshold : scalar, optional
+        eyelid velocity thresholds in fraction of max eye opening per
+        second, by default -2.4 and 2.4
+    absolute_max_distance : scalar, optional
+        eyelid distances (pixels) above this are removed as outliers, by
+        default 400
+    outlier_z_max : scalar, optional
+        eyelid distances with z score above this are removed as outliers
+        (low z scores are not removed), by default 4
+    max_eye_opening : scalar or None, optional
+        eyelid distance (pixels) treated as fully open, by default None
+        (max of the resampled distance)
+    idx : array-like or None, optional
+        indices of frames in `pupil_data` to use, by default None (all)
+
+    Returns
+    -------
+    dict with fields:
+        timestamp : array
+            (m,) resampled (uniform) timestamps
+        distance : array
+            (m,) resampled eyelid distance in pixels (not normalized)
+        timestamp_orig : array
+            original timestamps (selected by `idx`)
+        distance_orig : array
+            eyelid distance at original timestamps, before outlier removal
+        blinks_onoff : list of tuples
+            (onset, offset, duration) for each blink; onset and offset are
+            times on the `timestamp` clock (offset is the first resampled
+            time after the blink), duration is in seconds
     """
     # Fixed parameters
     resampling_method = 'thin-plate_spline'
@@ -432,11 +671,45 @@ def detect_blinks_confidence(pupil_data,
                   max_full_blink_time = 500 / 1000,
                   idx=None
                  ):
-    """
-    if min_confidence is None, use 1 std below median
-    All closing, opening, blink times in ms
-    velocity should be converted to % closure / second
+    """Detect blinks as periods of low pupil detection confidence
 
+    Confidence is resampled to a uniform `fps` with a smoothing thin-plate
+    spline (smoothing=0.001, neighbors=7); runs of samples with confidence
+    below `min_confidence` are blink candidates, and candidates with
+    durations outside (`min_full_blink_time`, `max_full_blink_time`) are
+    discarded.
+
+    Parameters
+    ----------
+    pupil_data : dict
+        pupil detection arraydict with 'timestamp' and 'confidence' fields
+    fps : scalar, optional
+        sampling rate (Hz) to which confidence is resampled, by default 120
+    min_confidence : scalar or None, optional
+        confidence threshold below which samples are labeled blinks, by
+        default 0.7. If None, use 1 std below the median confidence.
+    min_full_blink_time : scalar, optional
+        minimum blink duration in SECONDS (exclusive), by default 0.016
+    max_full_blink_time : scalar, optional
+        maximum blink duration in SECONDS (exclusive), by default 0.5
+    idx : array-like or None, optional
+        indices of samples in `pupil_data` to use, by default None (all)
+
+    Returns
+    -------
+    dict with fields:
+        timestamp : array
+            (m,) resampled (uniform) timestamps
+        confidence : array
+            (m,) resampled confidence
+        timestamp_orig : array
+            original timestamps (selected by `idx`)
+        confidence_orig : array
+            original confidence (selected by `idx`)
+        blinks_onoff : list of tuples
+            (onset, offset, duration) for each blink; onset and offset are
+            times on the `timestamp` clock (offset is the first resampled
+            time after the blink), duration is in seconds
     """
     # Fixed parameters
     resampling_method = 'thin-plate_spline'
@@ -488,6 +761,34 @@ def detect_blinks_confidence(pupil_data,
 
 
 def get_saccade_rate(onoff_times, timestamps, output_fps=1, orig_fps=120, window=10):
+    """Compute event (e.g. saccade) rate in a sliding window
+
+    Counts event onsets strictly within +/- `window` / 2 of each output
+    time. Identical in implementation to `get_blink_rate` (variable names
+    refer to blinks).
+
+    Parameters
+    ----------
+    onoff_times : array-like
+        (n, 2 or 3) events, onset times in first column, on the same clock
+        as `timestamps` (seconds)
+    timestamps : array-like
+        timestamps (seconds) spanning the period over which to compute the
+        rate; only the min and max are used
+    output_fps : scalar, optional
+        sampling rate (Hz) of the output rate time series, by default 1
+    orig_fps : scalar, optional
+        unused, by default 120
+    window : scalar, optional
+        window length in seconds, by default 10
+
+    Returns
+    -------
+    np.ndarray
+        events per minute at times np.arange(min(timestamps),
+        max(timestamps), 1 / `output_fps`) (times are not returned);
+        NaN within `window` / 2 of either end
+    """
     max_time = np.max(timestamps)
     min_time = np.min(timestamps)
     blink_starts = np.asarray(onoff_times)[:,0]
@@ -533,9 +834,10 @@ def find_saccades(gaze,
     ----------
     gaze : dict
         gaze dict with 'norm_pos' (0-1 gaze position estimates in normalized
-        world camera coordinates),'timestamps', and 'confidence' fields
+        world camera coordinates),'timestamp', and 'confidence' fields
     session : str, optional
-        string identifier for session in which we are operating, by default None
+        string identifier for session in which we are operating, by default
+        None (currently unused)
     aspect_ratio : scalar, optional
         aspect ratio of world camera, by default 4/3
     max_size_deg : scalar, optional
@@ -544,17 +846,23 @@ def find_saccades(gaze,
         (this is a bad assumption and should be revisited at some point to 
         compensate for fisheye world camera lens)
     saccade_min_velocity : scalar, optional
-        threshold over which movement is defined as a saccade, by default 75
+        threshold (deg/s) over which movement is defined as a saccade, by
+        default 75
         TO DO: make me adaptive as in ReModNav
     saccade_max_velocity : scalar, optional
-        threshold over which velocity estimate is assumed to be divergent
-        (i.e. probably part of a blink)
+        threshold (deg/s) over which velocity estimate is assumed to be
+        divergent (i.e. probably part of a blink), by default 600
     blink_confidence_threshold : float, optional
         threshold for gaze confidence used to define blinks, by default 0.85
 
     Returns
     -------
-    Binary arrays labeling saccades and blinks
+    saccade_binary : np.ndarray
+        (n,) boolean, True where eye velocity > `saccade_min_velocity`
+        (NOT excluding blinks / divergent velocities)
+    blink_binary_extended : np.ndarray
+        (n,) boolean, True where confidence < `blink_confidence_threshold`
+        or eye velocity > `saccade_max_velocity`
 
     See Also
     --------
@@ -841,6 +1149,35 @@ def plot_blinks(blinks,
                 alpha=0.3,
                 percentiles=(0.1, 99.9),
                 ):
+    """Plot eyelid distance traces for all blinks, aligned to blink onset
+
+    Each blink (plus `blink_buffer` before and after) is plotted as a trace
+    of normalized eyelid distance vs. time from blink onset, colored by
+    blink duration. Traces are drawn in order of increasing duration.
+
+    Parameters
+    ----------
+    blinks : dict
+        output of `detect_blinks`, with 'timestamp', 'distance', and
+        'blinks_onoff' fields. 'blinks_onoff' must be an (n, 3) array
+        (a list, as returned by `detect_blinks`, must be converted first).
+    blink_buffer : scalar, optional
+        time (seconds) to plot before and after each blink, by default 0.25
+    color_by : str, optional
+        unused; traces are always colored by duration, by default 'duration'
+    min_time, max_time : scalar, optional
+        blink durations (seconds) mapped to the ends of `cmap`, by default
+        0.125 and 0.3; `max_time` also sets the x axis limit
+    cmap : matplotlib colormap, optional
+        colormap for blink duration, by default plt.cm.viridis
+    ax : matplotlib axis or None, optional
+        axis into which to plot, by default None (new figure)
+    alpha : scalar, optional
+        line transparency, by default 0.3
+    percentiles : tuple, optional
+        percentiles of 'distance' (clipped to [0, 300]) mapped to 0 and 1
+        for normalizing eyelid distance, by default (0.1, 99.9)
+    """
     if ax is None:
         fix, ax = plt.subplots()
     #dst_min = np.nanmin(blinks['distance'])
@@ -883,8 +1220,24 @@ def detrend_median(data, fps=45, window_seconds=20, impute_mean=(0.5, 0.5)):
 
     Parameters
     ----------
+    data : np.ndarray
+        (n, 2) data (e.g. normalized x, y positions), assumed uniformly
+        sampled at `fps`
+    fps : int, optional
+        sampling rate of `data` in Hz, by default 45
+    window_seconds : int, optional
+        length of median filter window in seconds, by default 20. The
+        kernel size is `fps` * `window_seconds` + 1 samples, which must be
+        an odd integer (`scipy.signal.medfilt` requirement).
+    impute_mean : tuple or None, optional
+        value added back to each column after detrending, by default
+        (0.5, 0.5) (center of normalized coordinates). None to leave the
+        output centered on zero.
 
-
+    Returns
+    -------
+    np.ndarray
+        (n, 2) detrended data
     """
     med_x = scipy.signal.medfilt(data[:,0], kernel_size=fps * window_seconds + 1)
     med_y = scipy.signal.medfilt(data[:,1], kernel_size=fps * window_seconds + 1)
@@ -896,6 +1249,33 @@ def detrend_median(data, fps=45, window_seconds=20, impute_mean=(0.5, 0.5)):
 
 
 def get_blink_rate(onoff_times, timestamps, output_fps=1, orig_fps=120, window=10):
+    """Compute blink rate in a sliding window
+
+    Counts blink onsets strictly within +/- `window` / 2 of each output
+    time.
+
+    Parameters
+    ----------
+    onoff_times : array-like
+        (n, 2 or 3) blinks, onset times in first column, on the same clock
+        as `timestamps` (seconds); e.g. 'blinks_onoff' from `detect_blinks`
+    timestamps : array-like
+        timestamps (seconds) spanning the period over which to compute the
+        rate; only the min and max are used
+    output_fps : scalar, optional
+        sampling rate (Hz) of the output rate time series, by default 1
+    orig_fps : scalar, optional
+        unused, by default 120
+    window : scalar, optional
+        window length in seconds, by default 10
+
+    Returns
+    -------
+    np.ndarray
+        blinks per minute at times np.arange(min(timestamps),
+        max(timestamps), 1 / `output_fps`) (times are not returned);
+        NaN within `window` / 2 of either end
+    """
     max_time = np.max(timestamps)
     min_time = np.min(timestamps)
     blink_starts = np.asarray(onoff_times)[:,0]
@@ -914,6 +1294,33 @@ def get_blink_rate(onoff_times, timestamps, output_fps=1, orig_fps=120, window=1
     return np.asarray(out)
 
 def remove_blinks(blinks, *data, buffer=None, replace_with=np.nan, timestamp=None):
+    """Replace data during blinks with a fill value (NaN by default)
+
+    Parameters
+    ----------
+    blinks : dict
+        output of `detect_blinks` or `detect_blinks_confidence`, with
+        'blinks_onoff', 'timestamp', and 'timestamp_orig' fields
+    *data : array-like
+        one or more arrays to clean; first dimension must be time
+    buffer : scalar, list, tuple, or None, optional
+        time (seconds) added before and after each blink (see
+        `buffer_onoff`), by default None (no buffer)
+    replace_with : scalar, optional
+        value written into blink periods, by default np.nan (so data must
+        have a float dtype)
+    timestamp : array-like or None, optional
+        timestamps for `data`. If None (default), inferred from the length
+        of the first data array: blinks['timestamp'] (resampled) or
+        blinks['timestamp_orig']. The inferred timestamps are then reused
+        for all subsequent data arrays.
+
+    Returns
+    -------
+    list of np.ndarray
+        copies of each `data` array, with samples strictly between blink
+        onset and offset set to `replace_with`
+    """
     out = []
     onoff = blinks['blinks_onoff']
     if buffer is not None:

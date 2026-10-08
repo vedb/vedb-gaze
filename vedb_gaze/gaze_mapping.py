@@ -1,4 +1,11 @@
 
+"""Gaze mapping: apply a computed calibration to pupil data.
+
+Called by the `pipelines.map_gaze` step (``config/gaze-<tag>.yaml``) to turn
+pupil positions into gaze positions in normalized world-camera coordinates.
+"""
+
+
 def gaze_mapper(calibration, pupil_data, mapping_type='default_mapper', **kwargs):
     """Map gaze given a calibration object (or objects) and pupil data
 

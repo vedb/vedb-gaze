@@ -1,4 +1,14 @@
 # Odometry visualization
+"""Loading and plotting of head-tracking (odometry) data for VEDB sessions.
+
+Odometry (head position, orientation, and their derivatives) is recorded by
+a RealSense tracking camera and stored in each session folder
+('odometry.pldata' plus 'odometry_timestamps_0start.npy'). This module
+loads it into an arraydict (`load_odometry`), converts orientation
+quaternions to Euler angles, and plots overviews of head movement
+(`plot_odometry_values`, `plot_odo_position`). It is not part of the core
+gaze pipeline, but supports analysis of gaze relative to head movement.
+"""
 import vedb_gaze
 import plot_utils
 import file_io
@@ -18,6 +28,27 @@ from .visualization import angle_hist
 
 
 def resample_data(in_time, in_data, out_time, method='scipy', **kwargs):
+    """Linearly interpolate data to new timestamps
+
+    Parameters
+    ----------
+    in_time : array-like
+        original timestamps
+    in_data : array-like
+        data to resample; first dimension must match `in_time`
+    out_time : array-like
+        new timestamps (must be within the range of `in_time`)
+    method : str, optional
+        only 'scipy' (`scipy.interpolate.interp1d`, linear) is supported,
+        by default 'scipy'; other values raise an UnboundLocalError
+    **kwargs
+        unused
+
+    Returns
+    -------
+    np.ndarray
+        data interpolated at `out_time`
+    """
     # TODO handle confidence, nans
     if method=='scipy':
         out = interpolate.interp1d(in_time, in_data, axis=0)(out_time)
@@ -29,6 +60,48 @@ def load_odometry(folder,
                   smooth_kwargs=None,
                   fps = 200,
                   verbose=False):
+    """Load (and optionally resample and smooth) odometry for one session
+
+    Parameters
+    ----------
+    folder : pathlib.Path
+        session folder containing 'odometry_timestamps_0start.npy' and
+        'odometry.pldata' (must be a Path, not a str)
+    resample : bool, optional
+        whether to resample data fields to a uniform `fps` by cubic
+        interpolation, by default True
+    smooth_filter_function : callable or None, optional
+        filter applied along time (axis=0) to each data field after
+        resampling, called as fn(data, axis=0, **smooth_kwargs), by default
+        scipy.signal.savgol_filter. None to skip smoothing. Samples that
+        were NaN before smoothing are reset to NaN afterwards.
+    smooth_kwargs : dict or None, optional
+        keyword arguments for `smooth_filter_function`, by default None
+        (window_length=51, polyorder=2 for savgol_filter, else {}). Any
+        'axis' key is removed (from the passed dict itself).
+    fps : scalar, optional
+        sampling rate (Hz) for resampling, by default 200
+    verbose : bool, optional
+        whether to print progress and load times, by default False
+
+    Returns
+    -------
+    dict
+        arraydict with fields 'tracker_confidence', 'position',
+        'orientation' (quaternion, w, x, y, z), 'linear_velocity',
+        'angular_velocity', 'linear_acceleration', 'angular_acceleration'
+        (units as recorded by the tracker; position in meters), plus
+        computed 'absolute_linear_velocity' (norm of linear velocity),
+        'roll', 'pitch', 'yaw' (degrees, from `euler_from_quaternion`; see
+        Notes), and 'timestamp' (resampled if `resample`). Any other
+        fields in the file are kept but not resampled or smoothed.
+
+    Notes
+    -----
+    `euler_from_quaternion` returns columns in the order (pitch, roll,
+    yaw), but they are unpacked here as (roll, pitch, yaw), so the 'roll'
+    and 'pitch' fields appear to be swapped.
+    """
     if smooth_kwargs is None:
         if smooth_filter_function is savgol_filter:
             smooth_kwargs = dict(window_length=51,
@@ -107,7 +180,37 @@ def plot_odo_position(odo_pos,
                       quiver_sampling=200, 
                       quiver_kw=None,
                       ax=None):
-    """Convention here is x is horizontal, y is front-to-back, z is up-and-down"""
+    """Plot head position (path) seen from above, optionally with heading arrows
+
+    Convention here is x is horizontal, y is front-to-back, z is up-and-down.
+    The path is plotted as x vs. -y, with a green circle at the start and a
+    red square at the end.
+
+    Parameters
+    ----------
+    odo_pos : np.ndarray
+        (n, 3) position; columns are taken as (x, z, y), i.e. the second
+        column is vertical and the third is front-to-back
+    odo_ori : np.ndarray or None, optional
+        orientation for heading arrows: (n, 4) quaternions (w, x, y, z) or
+        (n,) yaw in degrees, by default None (no arrows). Arrows point in
+        direction (sin(yaw), cos(yaw)).
+    do_3d : bool, optional
+        whether to make a 3D plot, by default False. Arrows are not drawn
+        in 3D, and the 3D start / end markers are not consistent with the
+        plotted path (see code).
+    quiver_sampling : int, optional
+        draw an arrow every `quiver_sampling` samples, by default 200
+    quiver_kw : dict or None, optional
+        keyword arguments for `ax.quiver`, by default None
+    ax : matplotlib axis or None, optional
+        axis into which to plot, by default None (new figure)
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        figure containing the plot
+    """
     x, z, y = odo_pos.T
     do_quiver = odo_ori is not None
     if do_quiver:
@@ -175,10 +278,23 @@ def plot_odo_position(odo_pos,
 ###
 def euler_from_quaternion(w, x, y, z):
         """
-        Convert a quaternion into euler angles (roll, pitch, yaw)
-        pitch is rotation around x (ear to ear) in radians (counterclockwise)
-        roll is rotation around y (nose to occiput) in radians (counterclockwise)
-        yaw is rotation around z (spine to crown) in radians (counterclockwise)
+        Convert a quaternion into euler angles (pitch, roll, yaw)
+
+        Quaternion axes are first remapped from the RealSense convention
+        (x' = -z, y' = x, z' = -y).
+        pitch is rotation around x (ear to ear) (counterclockwise)
+        roll is rotation around y (nose to occiput) (counterclockwise)
+        yaw is rotation around z (spine to crown) (counterclockwise)
+
+        Parameters
+        ----------
+        w, x, y, z : scalar or np.ndarray
+            quaternion components, as recorded by the tracker
+
+        Returns
+        -------
+        np.ndarray
+            (n, 3) array with columns (pitch, roll, yaw), in DEGREES
         """
         # Dont' ask. Realsense is idiotic.
         x_ = -z
@@ -201,11 +317,17 @@ def convert_speed(mps, to='mins_per_mile'):
     ----------
     mps : scalar or array
         velocity in meters per second
-    to : str
-        identifier for output, may be:
-        'min / mile', 'mins per mile'
-        or 
+    to : str, optional
+        identifier for output, by default 'mins_per_mile'. May be:
+        'min / mile', 'mins_per_mile'
+        or
         'mph', 'miles per hour'
+        (other values raise an UnboundLocalError)
+
+    Returns
+    -------
+    scalar or array
+        speed in minutes per mile or miles per hour
     """
     mps_per_mph = 2.237
     m_per_mi = 1609.34
@@ -233,7 +355,20 @@ def plot_at_times(tt, y, time_start, time_end,
 
     Parameters
     ----------
-
+    tt : np.ndarray
+        timestamps for `y`, in seconds
+    y : np.ndarray
+        values to plot; first dimension must match `tt`
+    time_start, time_end : scalar
+        start and end of plotted period, in `time_units` (samples strictly
+        between them are plotted; see `get_frame_indices`)
+    time_units : str, optional
+        'seconds' / 's' or 'minutes' / 'm', units of `time_start`,
+        `time_end`, and of the plotted x axis, by default 'seconds'
+    ax : matplotlib axis or None, optional
+        axis into which to plot, by default None (new figure)
+    **kwargs
+        passed to `ax.plot`
     """
     if ax is None:
         _, ax = plt.subplots()
@@ -255,10 +390,35 @@ def plot_odometry_values(odometry_dict,
     figsize=(12, 12),
     ):
     """Plot an overview of odometry for a session
-    
-    to save load time, odometry_session can be a list of loaded session odometry values:
-    session, odo_t, odo_pos, roll, pitch, yaw, abs_velocity, odo_linv, odo_lina, odo_angv, odo_anga = session
 
+    Creates a figure with polar histograms of pitch, yaw, and roll (the
+    first histogram also overlays yaw and roll), timelines of orientation,
+    angular velocity, and linear velocity (x axis in minutes from the
+    first sample, with markers colored by minute), and the head path seen
+    from above with yaw arrows (`plot_odo_position`).
+
+    Parameters
+    ----------
+    odometry_dict : dict
+        output of `load_odometry`; must have 'timestamp', 'position',
+        'roll', 'pitch', 'yaw', 'absolute_linear_velocity',
+        'linear_velocity', 'linear_acceleration', 'angular_velocity', and
+        'angular_acceleration' fields
+    time_start, time_end : scalar or None, optional
+        period to show in timelines, in minutes from the first sample, by
+        default None (whole session)
+    cmap_time : str, optional
+        colormap for minute markers, by default 'Oranges_r'
+    legend_kw : dict or None, optional
+        keyword arguments for timeline legends, by default None
+    quiver_sampling : int, optional
+        draw a heading arrow every `quiver_sampling` samples, by default 400
+    figsize : tuple, optional
+        figure size, by default (12, 12)
+
+    Returns
+    -------
+    None
     """
     # if isinstance(odometry_session, list):
     #     session, odo_t, odo_pos, roll, pitch, yaw, abs_velocity, odo_linv, odo_lina, odo_angv, odo_anga = odometry_session

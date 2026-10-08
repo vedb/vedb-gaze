@@ -1,4 +1,21 @@
 # Utilities supporting gaze analysis
+"""General utilities supporting the vedb_gaze pipeline.
+
+Provides:
+
+- yaml reading / writing and small list helpers
+- conversion between "arraydicts" (dict of arrays, e.g. 'timestamp',
+  'norm_pos', 'confidence') and "dictlists" (list of per-sample dicts, the
+  Pupil Labs format), plus filtering / stacking of arraydicts
+- time handling: matching data across clocks (`match_time_points`),
+  converting between binary labels, (onset, offset, duration) "onoff"
+  arrays, and time ranges (`onoff_from_binary`, `onoff_to_binary`,
+  `time_to_index`, `get_frame_indices`), and resampling (`resample_data`)
+- construction of pipeline output filenames from processing tags
+  (`make_file_strings`) and loading of pipeline outputs
+  (`load_pipeline_elements`). Default tags come from the package config
+  (`vedb_gaze.options.config`, 'defaults' section).
+"""
 
 import numpy as np
 import pandas as pd
@@ -25,6 +42,24 @@ for k in ['pupil', 'eyelid', 'pupil_detrend',
         defaults[k] = tmp
 
 def read_pl_gaze_csv(session_folder, output_id):
+    """Read a Pupil Player gaze export csv file
+
+    Reads <session_folder>/exports/<sub_directory>/gaze_positions.csv,
+    where sub_directory is str(`output_id`) repeated 3 times (e.g. 0 ->
+    '000'; note 1 -> '111', not '001'). Prints the file name.
+
+    Parameters
+    ----------
+    session_folder : str
+        path to session folder
+    output_id : int or str
+        export identifier
+
+    Returns
+    -------
+    pandas.DataFrame
+        contents of gaze_positions.csv
+    """
     sub_directory = str(output_id) * 3
     csv_file_name = os.path.join(
         session_folder, 'exports', sub_directory, "gaze_positions.csv")
@@ -60,25 +95,31 @@ def force_list(x, convert_tuple=False):
 
 def unique(seq, idfun=None):
     """Returns only unique values in a list (with order preserved).
-    (idfun can be defined to select particular values??)
-    
+
+    The first occurrence of each item is kept.
+
     Stolen from the internets 11.29.11
-    
+
     Parameters
     ----------
-    seq : TYPE
-        Description
-    idfun : None, optional
-        Description
-    
+    seq : iterable
+        items from which to select unique values
+    idfun : callable or None, optional
+        function mapping each item to a hashable key; items with the same
+        key are considered duplicates. By default None (the item itself)
+
     Returns
     -------
-    TYPE
-        Description
+    result : list
+        unique items of `seq`, in order of first occurrence
+    seen : dict
+        count of occurrences of each key
     """
     # order preserving
     if idfun is None:
-        def idfun(x): return x
+        def idfun(x):
+            """Identity key function (default)."""
+            return x
     seen = {}
     result = []
     for item in seq:
@@ -94,19 +135,42 @@ def unique(seq, idfun=None):
 
 def match_time_points(*data, fn=np.median, window=None):
     """Compute gaze position across matched time points
-    
-    Currently selects all gaze points within half a video frame of 
-    the target time (first data timestamp field) and takes median
-    of those values. 
-    
-    NOTE: This is messy. computing median doesn't work for fields of 
-    data that are e.g. dictionaries. These must be removed before 
-    calling this function for now. 
+
+    Resamples each data arraydict onto the timestamps of the first one.
+    If `window` is None (default), the nearest sample in time is taken
+    (and `fn` is ignored). Otherwise, all samples within `window` of each
+    reference time are selected and aggregated with `fn`.
+
+    NOTE: This is messy. computing median doesn't work for fields of
+    data that are e.g. dictionaries. These must be removed before
+    calling this function for now. Fields for which indexing / `fn`
+    fails are silently left as zeros.
+
+    Parameters
+    ----------
+    *data : dict
+        two or more arraydicts, each with a 'timestamp' field (on the same
+        clock) and numpy array fields with time as the first dimension.
+        The first is the time reference.
+    fn : callable, optional
+        aggregation function, called as fn(values, axis=0), by default
+        np.median
+    window : scalar or None, optional
+        half-width (same units as timestamps, usually seconds) of window
+        around each reference time, by default None (nearest sample)
+
+    Returns
+    -------
+    dict or tuple of dicts
+        one arraydict per input after the first, with 'timestamp' equal to
+        the reference timestamps; a single dict if only two inputs are
+        given
     """
     if window is None:
         # Overwite any function argument if window is set to none;
         # this will do nearest-frame resampling
         def fn(x, axis=None):
+            """Identity aggregation, for nearest-sample matching."""
             return x
     # Timestamps for first input are used as a reference
     reference_time = data[0]['timestamp']
@@ -162,21 +226,28 @@ def match_time_points(*data, fn=np.median, window=None):
 
 def onoff_from_binary(data, return_duration=True):
     """Converts a binary variable data into onsets, offsets, and optionally durations
-    
+
     This may yield unexpected behavior if the first value of `data` is true.
-    
+
     Parameters
     ----------
-    data : array-like, 1D
-        binary array from which onsets and offsets should be extracted
+    data : np.ndarray, 1D
+        binary (bool or 0/1) array from which onsets and offsets should be
+        extracted. Must contain at least one True value (otherwise an
+        IndexError is raised).
     return_duration : bool, optional
-        Description
-    
+        whether to include a duration column, by default True
+
     Returns
     -------
-    TYPE
-        Description
-    
+    np.ndarray
+        (n_events, 3) int array of (onset, offset, duration) in samples
+        (or (n_events, 2) without duration). Onset is the index of the
+        first True sample and offset the index of the first False sample
+        after it (exclusive end), so duration = offset - onset. For an
+        event still on at the end of `data`, offset is len(data) if it is
+        the only event, otherwise -1 (duration is computed correctly as
+        len(data) - onset in both cases).
     """
     if data[0]:
         start_value = 1
@@ -225,15 +296,16 @@ def onoff_to_binary(onoff, length):
     
     Parameters
     ----------
-    onoff : list of tuples
-        Each tuple is (onset_index, offset_index, [duration_in_frames]) for some event
-    length : total length of output vector
-        Scalar value for length of output binary index
-    
+    onoff : np.ndarray
+        (n, 2) or (n, 3) array; each row is (onset_index, offset_index,
+        [duration_in_frames]) for some event. Offset is exclusive.
+    length : int
+        total length of output binary index
+
     Returns
     -------
-    index
-        boolean index vector
+    index : np.ndarray
+        (length,) boolean index vector, True within events
     """
     index = np.zeros(length,)
     for on, off in onoff[:, :2]:
@@ -246,14 +318,24 @@ def time_to_index(onsets_offsets, timeline, index_type='integer'):
 
     Parameters
     ----------
-    onset_offsets : array-like
-        array of onsets and offsets in TIME
-    timeline : array-like
+    onsets_offsets : array-like
+        (n, 2) array of onsets and offsets in TIME (exactly 2 columns;
+        (n, 3) onoff arrays must be sliced first)
+    timeline : np.ndarray
         1d array of timestamps; this is the timeline into which to translate the time indices
-    index_type : str
-        'integer' or 'boolean'; 
+    index_type : str, optional
+        'integer' or 'boolean', by default 'integer'.
         'integer' returns integer indices for onsets and offsets in the specified timeline
-        'binary' returns boolean indices to select segments of the 
+        'boolean' returns a boolean index into `timeline` that is True
+        within any of the segments
+
+    Returns
+    -------
+    np.ndarray
+        if 'integer', (n, 2) int array of (first index with timeline >= onset,
+        1 + last index with timeline < offset), i.e. an exclusive end
+        index; if 'boolean', (len(timeline),) boolean array. Raises an
+        IndexError if a segment contains no timeline points.
     """
     if not isinstance(onsets_offsets, np.ndarray):
         onsets_offsets = np.asarray(onsets_offsets)
@@ -273,7 +355,21 @@ def filter_list(lst, idx):
 
 
 def filter_arraydict(arraydict, idx):
-    """Apply the same index to all fields in a dict of arrays"""
+    """Apply the same index to all fields in a dict of arrays
+
+    Parameters
+    ----------
+    arraydict : dict
+        dict of arrays, all with the same length
+    idx : array-like
+        boolean index (same length as fields of `arraydict`)
+
+    Returns
+    -------
+    dict
+        arraydict with only the selected items (rebuilt via a dictlist,
+        so fails if no items are selected)
+    """
     dictlist = arraydict_to_dictlist(arraydict)
     dictlist = filter_list(dictlist, idx)
     out = dictlist_to_arraydict(dictlist)
@@ -281,7 +377,23 @@ def filter_arraydict(arraydict, idx):
 
 
 def stack_arraydicts(*inputs, sort_key=None):
-    output = arraydict_to_dictlist(inputs[0])
+    """Concatenate arraydicts with the same fields
+
+    Parameters
+    ----------
+    *inputs : dict
+        arraydicts to concatenate (fields of the first define the output)
+    sort_key : str or None, optional
+        field by which to sort the stacked items (e.g. 'timestamp'), by
+        default None (keep input order)
+
+    Returns
+    -------
+    dict
+        stacked arraydict. If all inputs are empty, the first input
+        itself (not a copy) is returned.
+    """
+    output =arraydict_to_dictlist(inputs[0])
     for arrdict in inputs[1:]:
         arrlist = arraydict_to_dictlist(arrdict)
         output.extend(arrlist)
@@ -298,7 +410,19 @@ def stack_arraydicts(*inputs, sort_key=None):
 
 
 def dictlist_to_arraydict(dictlist):
-    """Convert from pupil format list of dicts to dict of arrays"""
+    """Convert from pupil format list of dicts to dict of arrays
+
+    Parameters
+    ----------
+    dictlist : list of dict
+        non-empty list of per-sample dicts; keys of the first dict define
+        the output fields
+
+    Returns
+    -------
+    dict
+        one np.array per field, with samples along the first dimension
+    """
     dict_fields = list(dictlist[0].keys())
     out = {}
     for df in dict_fields:
@@ -307,7 +431,19 @@ def dictlist_to_arraydict(dictlist):
 
 
 def arraydict_to_dictlist(arraydict):
-    """Convert from dict of arrays to pupil format list of dicts"""
+    """Convert from dict of arrays to pupil format list of dicts
+
+    Parameters
+    ----------
+    arraydict : dict
+        dict of arrays; the length of the first field sets the number of
+        items
+
+    Returns
+    -------
+    list of dict
+        one dict per sample; array-valued entries are converted to lists
+    """
     dict_fields = list(arraydict.keys())
     first_key = dict_fields[0]
     n = len(arraydict[first_key])
@@ -336,9 +472,16 @@ def get_frame_indices(start_time, end_time, all_time):
 		time after which to select frames
 	end_time: scalar
 		time before which to select frames
-	all_time: array-like
+	all_time: np.ndarray
 		full array of timestamps for data into which to index.
 
+	Returns
+	-------
+	start_frame : int
+		index of first frame with time strictly > `start_time`
+	end_frame : int
+		1 + index of last frame with time strictly < `end_time`
+		(raises an IndexError if no frames fall in the range)
 	"""
 	ti = (all_time > start_time) & (all_time < end_time)
 	time_clipped = all_time[ti]
@@ -352,8 +495,15 @@ def get_function(function_name):
 
     Parameters
     ----------
-    function_name : str
-        string name for function (including module)
+    function_name : str or callable
+        string name for function (including module), e.g.
+        'vedb_gaze.marker_detection.find_concentric_circles'. If a
+        callable is given, it is returned as is.
+
+    Returns
+    -------
+    callable
+        the named function
     """
     if callable(function_name):
         return function_name
@@ -367,6 +517,30 @@ def get_function(function_name):
 
 
 def _check_dict_list(dict_list, n=1, **kwargs):
+    """Select items from a list by attribute values and check their number
+
+    Parameters
+    ----------
+    dict_list : list
+        list of objects to filter. Note: matching uses hasattr / getattr,
+        so items must be objects with attributes (plain dicts never match
+        any keyword).
+    n : int or None, optional
+        number of matching items expected, by default 1. If None, all
+        matches are returned without checking.
+    **kwargs
+        attribute=value pairs that matching items must have
+
+    Returns
+    -------
+    object or list
+        the single match if `n` is 1, otherwise the list of matches
+
+    Raises
+    ------
+    ValueError
+        if the number of matches is not `n`
+    """
     tmp = dict_list
     for k, v in kwargs.items():
         tmp = [x for x in tmp if (hasattr(x, k)) and (getattr(x, k) == v)]
@@ -406,43 +580,64 @@ def make_file_strings(
     """
     Construct filename templates for gaze-pipeline outputs.
 
+    Each argument is a processing tag (parameter set name) for one
+    pipeline step; defaults come from the 'defaults' section of the
+    package config. Calibration, gaze, and error filenames include a hash
+    of the tags of all upstream steps (calibration hash: calibration
+    marker, split, cluster, epoch, pupil, pupil_detrend; error hash: those
+    plus eyelid, calibration, gaze, and validation marker, split, cluster;
+    None tags are skipped). This function only builds strings; it does not
+    check that files exist.
+
     Parameters
     ----------
-    pupil : str
-        Tag for the pupil detection algorithm (used in pupil filename).
+    pupil : str or None
+        Tag for the pupil detection algorithm (used in pupil filename and
+        hashes).
     eyelid : str or None
-        Reserved for eyelid-related tagging (not currently used).
+        Eyelid detection tag; only used in the error hash.
     pupil_detrend : str or None
-        Detrending tag for pupil processing.
+        Pupil detrending tag; only used in the calibration and error hashes.
     calibration_marker : str or None
-        Marker tag used for calibration.
+        Calibration marker detection tag.
     calibration_split : str or None
-        Split tag for calibration.
+        Calibration marker split tag; only used in hashes.
     calibration_cluster : str or None
-        Clustering tag for calibration markers.
-    validation_marker, validation_split, validation_cluster : str or None
-        Tags used for validation marker detection and processing.
-    calibration : str
-        Calibration algorithm tag used in gaze filename.
-    gaze : str
+        Calibration marker clustering tag.
+    validation_marker, validation_cluster : str or None
+        Tags for validation marker detection and clustering.
+    validation_split : str or None
+        Validation marker split tag; only used in the error hash.
+    calibration : str or None
+        Calibration algorithm tag (used in calibration and gaze filenames).
+    gaze : str or None
         Gaze mapping algorithm tag.
-    error : str
-        Error-processing tag used in error filename.
-    calibration_epoch : int
-        Epoch index used in calibration filename hashing.
-    eye : str or None
-        Placeholder or format for eye side in filenames; defaults to '%s'.
-    fov_str : str or None
-        Field-of-view string inserted into error filename; defaults to '%s'.
-    validation_epoch : int
-        Epoch index used in validation/error filename.
+    error : str or None
+        Error computation tag.
+    calibration_epoch : int, optional
+        Calibration epoch index, by default 0.
+    eye : str or None, optional
+        Eye ('left' or 'right') inserted in filenames, by default None
+        (leaves a '%s' placeholder).
+    fov_str : str or None, optional
+        Field-of-view string inserted in error filenames, by default None
+        (leaves a '%s' placeholder).
+    validation_checkerboard_size : str, optional
+        Checkerboard size; if not '4x7', replaces '4x7' in the
+        `validation_marker` tag, by default '4x7'.
+    validation_epoch : int, list, tuple, or None, optional
+        Validation epoch(s) for validation and error filenames, by default
+        None (epochs 0-5).
 
     Returns
     -------
     out : dict
-        Dictionary of filename templates with keys 'pupil_file', 'gaze_file', and
-        'error_file'. The templates include format placeholders for eye and fov
-        where appropriate.
+        Filenames (templates) with keys 'pupil', 'calibration_marker',
+        'calibration_cluster', 'calibration', 'gaze' (str), and
+        'validation_marker', 'validation_cluster', 'error' (lists, one per
+        validation epoch). A value is None if its tag is None. Templates
+        contain '%s' placeholders for `eye` and / or `fov_str` if those
+        were not given.
     """
         # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
     if fov_str is None:
@@ -482,6 +677,27 @@ def make_file_strings(
     return out
 
 def _load_files(fstr, folder, eye):
+    """Load .npz pipeline output file(s) into dicts
+
+    Parameters
+    ----------
+    fstr : str or list of str
+        filename or filename template(s) (with a '%s' for eye if `eye` is
+        not None), as from `make_file_strings`
+    folder : pathlib.Path
+        directory containing the files
+    eye : str, list, tuple, or None
+        eye(s) substituted into `fstr` via `fstr % eye`; 'both' means
+        ['left', 'right']; None for no substitution
+
+    Returns
+    -------
+    dict, list, or None
+        If `eye` is None: a dict of the file contents (str `fstr`; the
+        file must exist) or a list of dicts, with None for missing files
+        (list `fstr`). Otherwise a dict keyed by eye of the same; for str
+        `fstr`, missing files are omitted. None if nothing was loaded.
+    """
     if eye == 'both':
         eye = ['left','right']
     elif eye is None:
@@ -540,10 +756,43 @@ def load_pipeline_elements(folder,
         ):
     """Load all elements of gaze pipeline into a dict given processing spec and folder
 
+    Filenames are built with `make_file_strings`; steps whose tag is None
+    are skipped.
+
     Parameters
     ----------
     folder : str or pathlib.Path
         full path to directory with files in it
+    pupil, eyelid, pupil_detrend, calibration_marker, calibration_split,
+    calibration_cluster, validation_marker, validation_split,
+    validation_cluster, calibration, gaze, error : str or None
+        processing tags for each step (see `make_file_strings`); defaults
+        from the package config
+    calibration_epoch : int, optional
+        calibration epoch, by default 0
+    is_verbose : int, optional
+        unused, by default 1
+    eye : str or tuple, optional
+        eye(s) for which to load per-eye files, by default ('left', 'right')
+    **kwargs
+        passed to `make_file_strings` (e.g. `fov_str`, `validation_epoch`,
+        `validation_checkerboard_size`). Note that error filenames contain
+        an fov placeholder in addition to the eye placeholder, so loading
+        error files likely requires `fov_str` to be given.
+
+    Returns
+    -------
+    dict
+        'folder' (name of `folder`), plus one entry per non-None step with
+        keys as returned by `make_file_strings`: marker and cluster files
+        as dicts / lists of dicts (None for missing epochs), 'calibration'
+        as a dict of eye -> `Calibration` object, and pupil, gaze, and
+        error as dicts keyed by eye (see `_load_files`).
+
+    Raises
+    ------
+    Exception
+        if no pupil, gaze, or error files are found for a requested step
     """
     from .calibration import Calibration
     folder = pathlib.Path(folder)
@@ -606,6 +855,12 @@ def remove_outliers(timestamps, data,
     absolute_max : scalar, optional
         absolute maximum threshold above which points will be considered
         outliers; None for skip this, by default None
+
+    Returns
+    -------
+    timestamps, data : np.ndarray
+        inputs with outlying points removed (points with abs(z) >=
+        `z_threshold`, with z computed over all of `data`)
     """
     keep = np.ones_like(data) > 0
     # First, remove absolute threshold out-of-bounds
@@ -625,29 +880,43 @@ def resample_data(timestamps, data,
                       method='linear_interpolation',
                       remove_nans=True,
                       **kwargs):
-    """
-    Removes outliers (< max eye image size, std > std_threshold)
+    """Resample data to new (by default uniformly spaced) timestamps
+
     Parameters
-    ==========
-    timestamps : array-like
-        timestamps associated with `data`
-    data : array-like
+    ----------
+    timestamps : np.ndarray
+        1d timestamps (seconds) associated with `data`
+    data : np.ndarray
         values to be resampled (the 'y' or dependent values
-        to the `timestamps`' 'x'). May be 1d or 2d array, 
+        to the `timestamps`' 'x'). May be 1d or 2d array,
         first dimension must match `timestamps`
-    fps : scalar int
-        new sampling rate (will be uniform). Ignored if `new_time` is
-        provided.
-    new_time : array-like
+    fps : scalar, optional
+        new sampling rate in Hz (will be uniform), by default 120. Ignored
+        if `new_time` is provided.
+    new_time : np.ndarray or None, optional
         new array of timestamps, to allow manual specification. If left
-        as None, new_time will be defined as an array from min to max of
-        `timestamps` with values spaced at 1/fps 
-    method : str
-        'linear_interpolation' or 'thin-plate_spline', method for 
-        interpolation
-    remove_nans : bool
+        as None, new_time will be np.arange(timestamps[0], timestamps[-1],
+        1/fps) (last timestamp excluded)
+    method : str, optional
+        'linear_interpolation' (`scipy.interpolate.interp1d`) or
+        'thin-plate_spline' (`scipy.interpolate.RBFInterpolator`), method
+        for interpolation, by default 'linear_interpolation'
+    remove_nans : bool, optional
         whether to remove any nans in data before resampling (this will
-        fill in those nans with interpolated values)
+        fill in those nans with interpolated values), by default True
+    **kwargs
+        passed to `scipy.interpolate.RBFInterpolator` for
+        'thin-plate_spline' (e.g. `smoothing`; `neighbors` defaults to 7);
+        ignored for 'linear_interpolation'
+
+    Returns
+    -------
+    new_time : np.ndarray
+        new timestamps; (m,) for 'linear_interpolation', (m, 1) for
+        'thin-plate_spline'
+    data_out : np.ndarray
+        resampled data; same number of dimensions as `data` for
+        'linear_interpolation', always 2d (m, k) for 'thin-plate_spline'
     """
     if new_time is None:
         new_time = np.arange(timestamps[0], timestamps[-1], 1/fps)
@@ -689,4 +958,10 @@ def filter_data(timestamps, data,
                 low_cutoff=None,
                 high_cutoff=None,
                 ):
+    """Placeholder for temporal filtering of data; NOT IMPLEMENTED.
+
+    Currently does nothing and returns None. Parameters (timestamps, data,
+    and presumably low / high frequency cutoffs) are reserved for a future
+    implementation.
+    """
     pass
