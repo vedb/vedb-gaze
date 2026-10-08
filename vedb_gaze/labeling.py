@@ -12,6 +12,8 @@ import scipy.interpolate
 import scipy.signal
 from scipy.signal import savgol_filter
 from scipy.stats import zscore
+from scipy.spatial import distance
+from numpy.polynomial import polynomial as P
 from sklearn.decomposition import PCA
 
 from .utils import onoff_from_binary, time_to_index, resample_data
@@ -276,8 +278,6 @@ def get_eyelid_distance(pupil_data,
     return dst
 
 
-
-
 # Blinks
 
 # Values derived from labeled blinks in GitW
@@ -508,9 +508,6 @@ def get_saccade_rate(onoff_times, timestamps, output_fps=1, orig_fps=120, window
     
 
 
-def find_fixation_breaks(data):
-    pass
-
 # def load_gaze(session, pipeline_tag, 
 #               eye='best',
 #               resample_to=120,):
@@ -521,77 +518,6 @@ def find_fixation_breaks(data):
 #     # Keep high confidence for now
 #     keep = conf > 0.7
 #     keep.mean()    
-
-
-# def detect_saccades_eyevel(data, 
-#     fps=120, 
-#     min_full_saccade_time = 16,
-#     max_full_saccade_time = 500,
-#     velocity_type='xy',
-#     velocity_threshold=.2, # Completely made up, placeholder
-#     ): 
-#     """
-#     gaze data must be provided in degrees 
-#     Note: All parameter times in milliseconds
-#     velocity in degrees per second
-#     """
-    
-    
-#     # eye velocity from gradient of position
-#     vx = np.gradient(gaze[:,0]) / np.diff(gtime)
-#     vy = np.gradient(gaze[:,1]) / np.diff(gtime)
-#     if velocity_type == 'x':
-#         eyelid_velocity = vx
-#     elif velocity_type == 'y':
-#         eyelid_velocity = vx
-#     elif velocity_type == 'xy':
-#         eyelid_velocity = np.linalg.norm(np.vstack([vx, vy]), axis=0)
-#     pred_saccade_labels = np.zeros((len(eyelid_velocity),))
-#     blink_label = 1
-#     i = 0
-#     done = False
-#     while i < (len(eyelid_velocity)-1):
-#         if eyelid_velocity[i] <= negative_velocity_threshold:
-#             saccade_start = i
-#             while eyelid_velocity[i] <= negative_velocity_threshold:
-#                 saccade_end = i
-#                 i += 1
-#                 if i > (len(eyelid_velocity)-1):
-#                     done = True
-#                     break
-#             if (saccade_end-saccade_start) * (1000/fps) < max_eye_closing_time and \
-#                (saccade_end-saccade_start) * (1000/fps) > min_eye_closing_time and \
-#                 not done:
-#                 saccade_mid = i
-#                 while eyelid_velocity[i] > negative_velocity_threshold and \
-#                       eyelid_velocity[i] < positive_velocity_threshold:
-#                     saccade_end = i
-#                     i += 1
-#                     if i > (len(eyelid_velocity)-1):
-#                         done = True
-#                         break
-
-#                 if (saccade_mid-saccade_end) * (1000/fps) < max_full_closure_time and \
-#                     not done:
-#                     saccade_last = i
-#                     while eyelid_velocity[i] > positive_velocity_threshold:
-#                         saccade_end = i
-#                         i += 1
-#                         if i > (len(eyelid_velocity)-1):
-#                             done = True
-#                             break
-
-#                     # and min(eyelid_velocity[saccade_start:saccade_end])< 0.53:
-#                     if (saccade_end-saccade_last) * (1000/fps) > min_eye_opening_time and \
-#                         (saccade_end-saccade_start) * (1000/fps) < max_full_saccade_time and \
-#                         (saccade_end-saccade_start) * (1000/fps) > min_full_saccade_time and \
-#                         not done:
-#                         pred_saccade_labels[saccade_start:saccade_end] = saccade_label
-#         i += 1
-
-#     return pred_saccade_labels
-
-
 
 
 def find_saccades(gaze,
@@ -629,7 +555,12 @@ def find_saccades(gaze,
     Returns
     -------
     Binary arrays labeling saccades and blinks
-    """    """"""
+
+    See Also
+    --------
+    find_saccades_remodnav : adaptive-threshold saccade detection (REMoDNaV),
+        recommended over this fixed-threshold version
+    """
     # Clearer variables
     t = np.array(gaze['timestamp'])
     confidence = np.array(gaze['confidence'])
@@ -637,7 +568,6 @@ def find_saccades(gaze,
     eye_velocity = compute_eye_velocity(gaze, max_size_deg=max_size_deg, aspect_ratio=aspect_ratio)
     # Find blinks
     blink_binary = confidence < blink_confidence_threshold
-    onoff_blink = onoff_from_binary(blink_binary, return_duration=False)
     # Extend blinks with outlying / divergent eye velocities
     velocity_outliers = eye_velocity > saccade_max_velocity
     blink_binary_extended = velocity_outliers | (blink_binary)
@@ -869,8 +799,6 @@ def find_saccades_remodnav(gaze,
 #     ax.plot(tt[st:fin] / multiplier, y[st:fin], **kwargs)
 
 
-
-
 # Pylids video overlay
 # def pylids_label_video(fpath, eye_data, timestamps, st, fin, eye_color=(1, 0,1, 0.2), figsize=(5, 5)):
 
@@ -901,8 +829,6 @@ def find_saccades_remodnav(gaze,
 #         pupil_h[0].set_width(ellipse_data_right['axes'][0])
 #         # Accumulate? Either for hist, or only matched data.
 #         pupil_h[1].set_offsets([ellipse_data_right['center']])
-
-
 
 
 def plot_blinks(blinks, 
@@ -948,29 +874,6 @@ def plot_blinks(blinks,
     ax.set_ylabel('Eyelid-to-eyelid distance') #\n(proportion of max opening)')
     ax.set_xlabel("Time (s)")
     plot_utils.set_ax_fontsz(ax, lab=11, tk=9, name='Helvetica')        
-
-def buffer_onoff(onoff, buffer_time):
-    """Take list of onsets and offsets and add time before and after
-    
-    Parameters
-    ----------
-    onoff: array-like
-        array or list with tuples, each row (or item of list) should be
-        (onset, offset, duration)
-    buffer time : scalar, array-like
-        if scalar, same `buffer_time` is added before onsets & after offsets
-        if tuple, list, or array, should be 2 long, with separate values
-        for pre-onset and post-offset buffers
-    
-    """
-    if isinstance(buffer_time, (list, tuple)):
-        pre, post = buffer_time
-    else:
-        pre = post = buffer_time
-    out = []
-    for on, off, duration in onoff:
-        out.append([on-pre, off+post, duration+pre+post])
-    return np.asarray(out)
 
 def detrend_median(data, fps=45, window_seconds=20, impute_mean=(0.5, 0.5)):
     """Perform median detrending on data
@@ -1033,76 +936,3 @@ def remove_blinks(blinks, *data, buffer=None, replace_with=np.nan, timestamp=Non
             tmp[ti] = replace_with
         out.append(tmp)
     return out
-
-
-
-def detect_saccades_eyevel(data, 
-    fps=120, 
-    min_full_saccade_time = 16,
-    max_full_saccade_time = 500,
-    velocity_type='xy',
-    velocity_threshold=.2, # Completely made up, placeholder
-    ): 
-    """
-    gaze data must be provided in degrees 
-    Note: All parameter times in milliseconds
-    velocity in degrees per second
-    """
-    
-    
-    # eye velocity from gradient of position
-    vx = np.gradient(gaze[:,0]) / np.diff(gtime)
-    vy = np.gradient(gaze[:,1]) / np.diff(gtime)
-    if velocity_type == 'x':
-        eyelid_velocity = vx
-    elif velocity_type == 'y':
-        eyelid_velocity = vx
-    elif velocity_type == 'xy':
-        eyelid_velocity = np.linalg.norm(np.vstack([vx, vy]), axis=0)
-    pred_saccade_labels = np.zeros((len(eyelid_velocity),))
-    blink_label = 1
-    i = 0
-    done = False
-    while i < (len(eyelid_velocity)-1):
-        if eyelid_velocity[i] <= negative_velocity_threshold:
-            saccade_start = i
-            while eyelid_velocity[i] <= negative_velocity_threshold:
-                saccade_end = i
-                i += 1
-                if i > (len(eyelid_velocity)-1):
-                    done = True
-                    break
-            if (saccade_end-saccade_start) * (1000/fps) < max_eye_closing_time and \
-               (saccade_end-saccade_start) * (1000/fps) > min_eye_closing_time and \
-                not done:
-                saccade_mid = i
-                while eyelid_velocity[i] > negative_velocity_threshold and \
-                      eyelid_velocity[i] < positive_velocity_threshold:
-                    saccade_end = i
-                    i += 1
-                    if i > (len(eyelid_velocity)-1):
-                        done = True
-                        break
-
-                if (saccade_mid-saccade_end) * (1000/fps) < max_full_closure_time and \
-                    not done:
-                    saccade_last = i
-                    while eyelid_velocity[i] > positive_velocity_threshold:
-                        saccade_end = i
-                        i += 1
-                        if i > (len(eyelid_velocity)-1):
-                            done = True
-                            break
-
-                    # and min(eyelid_velocity[saccade_start:saccade_end])< 0.53:
-                    if (saccade_end-saccade_last) * (1000/fps) > min_eye_opening_time and \
-                        (saccade_end-saccade_start) * (1000/fps) < max_full_saccade_time and \
-                        (saccade_end-saccade_start) * (1000/fps) > min_full_saccade_time and \
-                        not done:
-                        pred_saccade_labels[saccade_start:saccade_end] = saccade_label
-        i += 1
-
-    return pred_saccade_labels
-
-
-

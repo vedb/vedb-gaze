@@ -51,8 +51,9 @@ def get_default_kwargs(fn):
         function for which to get kws
     """
     import inspect
-    kws = inspect.getargspec(fn)
-    defaults = dict(zip(kws.args[-len(kws.defaults):], kws.defaults))
+    defaults = dict((name, param.default)
+                    for name, param in inspect.signature(fn).parameters.items()
+                    if param.default is not inspect.Parameter.empty)
     return defaults
 
 
@@ -88,7 +89,7 @@ def pupil_detection(eye_video_file,
         fpath = output_dir / f'pupil_detection-{eye}-{param_tag}.npz'
     else:
         fpath = output_dir / f'{base_output_name}_pupil_detection-{eye}-{param_tag}.npz'
-    fpath_fail = output_dir / (fpath.name.replace('.npz', 'failed'))
+    fpath_fail = output_dir / (fpath.name.replace('.npz', '.failed'))
     if fpath.exists():
         return fpath
     if fpath_fail.exists():
@@ -245,7 +246,7 @@ def marker_splitting(marker_file,
         output_dir,
         is_verbose=False):
     """"""
-    if is_notebook:
+    if is_notebook():
         progress_bar = tqdm.notebook.tqdm
     else:
         progress_bar = tqdm.tqdm
@@ -254,7 +255,7 @@ def marker_splitting(marker_file,
     output_dir = pathlib.Path(output_dir)
     # Check for failed input
     if 'failed' in str(marker_file):
-        return 'previous_step.failed'
+        return output_dir / 'previous_step.failed'
     # Check for extant file / previous failed run of this step
     _, orig_tag, epoch_str = marker_file.name.split('-')
     epoch_str = os.path.splitext(epoch_str)[0]
@@ -308,7 +309,7 @@ def marker_clustering(marker_file,
     """"""
     if is_verbose:
         print(f"\n=== Finding marker epochs ({param_tag}) ===\n")
-    if is_notebook:
+    if is_notebook():
         progress_bar = tqdm.notebook.tqdm
     else:
         progress_bar = tqdm.tqdm
@@ -392,7 +393,7 @@ def compute_calibration(marker_file,
     fpath = output_dir / fname
     if fpath.exists():
         return fpath
-    fpath_fail = output_dir / (fname.replace('.npz', 'failed'))
+    fpath_fail = output_dir / (fname.replace('.npz', '.failed'))
     if fpath_fail.exists():
         return fpath_fail
 
@@ -436,6 +437,8 @@ def map_gaze(pupil_files,
              base_output_name=None,
              is_verbose=False):
     """Estimate gaze from calibration & pupil positions"""
+    # assure `output_dir` is a pathlib object
+    output_dir = pathlib.Path(output_dir)
     # Handle inputs
     if not isinstance(pupil_files, (list, tuple)):
         pupil_files = [pupil_files]
@@ -450,13 +453,11 @@ def map_gaze(pupil_files,
     else:
         fname = f'{base_output_name}_gaze-{eye}-{param_tag}-{calibration_tag}-{input_hash}.npz'
     #print(f'map_gaze fname is: {fname}')
-    # assure `output_dir` is a pathlib object
-    output_dir = pathlib.Path(output_dir)
     # Check for extant file / previous failed run of this step
     fpath = output_dir / fname
     if fpath.exists():
         return fpath
-    fpath_fail = output_dir / (fname.replace('.npz', 'failed'))
+    fpath_fail = output_dir / (fname.replace('.npz', '.failed'))
     if fpath_fail.exists():
         return fpath_fail
 
@@ -484,9 +485,10 @@ def map_gaze(pupil_files,
     # Manage ouptut file
     if failed:
         fpath_fail.open(mode='w')
+        return fpath_fail
     else:
         np.savez(fpath, **data)
-    return fpath
+        return fpath
 
 
 def compute_error(gaze_file,
@@ -499,6 +501,8 @@ def compute_error(gaze_file,
              is_verbose=False):
     if is_verbose:
         print("\n=== Computing error ===\n")
+    # assure `output_dir` is a pathlib object
+    output_dir = pathlib.Path(output_dir)
     try:
         # Check for failed input
         if ('failed' in str(marker_file)) or ('failed' in str(gaze_file)):
@@ -513,8 +517,6 @@ def compute_error(gaze_file,
             fname = f'error-{eye}-{param_tag}-{input_hash}{epoch_str}.npz'
         else:
             fname = f'{base_output_name}_error-{eye}-{param_tag}-{input_hash}{epoch_str}.npz'
-        # assure `output_dir` is a pathlib object
-        output_dir = pathlib.Path(output_dir)
         # Check for extant file / previous failed run of this step
         fpath = output_dir / fname
         if fpath.exists():
@@ -543,15 +545,11 @@ def compute_error(gaze_file,
     except ValueError as ve:
         print(ve.args)
         failed = True
-    except:
-        raise
-        # Print something?
-        failed = True
 
     # Manage ouptut file
     if failed:
         fpath_fail.open(mode='w')
-        return fpath
+        return fpath_fail
     else:
         np.savez(fpath, **error)
         return fpath

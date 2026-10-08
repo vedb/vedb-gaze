@@ -166,6 +166,7 @@ def compute_error(marker,
     if method=='griddata':
         gaze_err_image = tmp
         if error_smoothing_kernels is not None:
+            import cv2
             tmp = np.nan_to_num(gaze_err_image, nan=np.nanmax(gaze_err))
             tmp = cv2.blur(tmp, error_smoothing_kernels)
             tmp[np.isnan(gaze_err_image)] = np.nan
