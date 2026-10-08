@@ -15,9 +15,9 @@ Notes
 -----
 Depends on the external `plot_utils` and `file_io` packages. Some functions
 (`plot_eye_at_marker`) use `vedb_store`, and `show_dots` expects `vedb_store`
-objects. Several functions near the end of the module (`make_gaze_animation`,
-`show_session`, `label_eye_video`) reference undefined names and appear not
-to run as written. Large
+objects. Two functions near the end of the module (`make_gaze_animation`,
+`label_eye_video`) reference undefined names and appear not to run as
+written. Large
 triple-quoted blocks in the module hold older, disabled code.
 """
 import matplotlib.pyplot as plt
@@ -1283,7 +1283,6 @@ def plot_session_qc(folder,
                     list_values.append(len(vv))
                 elif isinstance(vv, list):
                     list_values.append(len(vv))
-            print(list_values)
             failed = all([v == 0 for v in list_values])
         elif isinstance(x, list):
             failed = (len(x) == 0) or np.all([check_failed(x_) for x_ in x])
@@ -2496,12 +2495,14 @@ def show_session(folder,
     """Quickie visualization of frames from a session
 
     Shows `n_frames` world frames at evenly spaced times between
-    `pct_start` and `pct_fin` of the recording duration.
+    `pct_start` and `pct_fin` of the recording duration. Each time is
+    shown as the first world frame at or after it.
 
     Parameters
     ----------
-    folder : pathlib.Path
-        session folder containing 'worldPrivate.mp4' and world timestamps
+    folder : str or pathlib.Path
+        session folder containing 'worldPrivate.mp4' and
+        'world_timestamps_0start.npy'
     n_frames : int, optional
         number of frames to show, by default 4
     pct_start : float, optional
@@ -2512,43 +2513,40 @@ def show_session(folder,
         by default 0.90
     sc : float, optional
         per-subplot size scale (inches), by default 2
-    axs : array of matplotlib axes, optional
-        axes into which to plot, by default None
+    axs : matplotlib axis or array of axes, optional
+        axes into which to plot (at least `n_frames`), by default None
+        (new figure)
 
     Returns
     -------
     fig : matplotlib figure
-
-    Notes
-    -----
-    As written this does not run: it references undefined names
-    (`recording_duration` vs. assigned `recording_duratio`, `ax`, `vmt`),
-    loads timestamps from a '.mp4' filename with `np.load`, and passes
-    times in seconds as frame indices (`idx`) to `file_io.load_video`.
     """
+    folder = pathlib.Path(folder)
     video_file = folder / 'worldPrivate.mp4'
-    time_file = folder / 'world_timestamps_0start.mp4'
+    time_file = folder / 'world_timestamps_0start.npy'
     world_time = np.load(time_file)
-    recording_duratio = world_time[-1] - world_time[0]
-    image_size = [2048, 1536]
+    # Times relative to start of recording
+    world_time = world_time - world_time[0]
+    recording_duration = world_time[-1]
+    image_size = [2048, 1536]  # width, height
     ar = image_size[0] / image_size[1]
     st = int(np.floor(recording_duration * pct_start))
     fin = int(np.floor(recording_duration * pct_fin))
-    #print(st, fin)
     time_points = np.linspace(st, fin, n_frames)
-    #print(time_points)
-    nr,nc = vmt.plot_utils.find_squarish_dimensions(n_frames)
-    if ax is None:
+    # First frame at or after each time point
+    frame_indices = np.minimum(np.searchsorted(world_time, time_points), len(world_time) - 1)
+    nr,nc = plot_utils.find_squarish_dimensions(n_frames)
+    if axs is None:
         fig, axs = plt.subplots(nc, nr, 
                                 figsize=(nr*sc * ar, nc*sc))
     else:
-        fig = axs.flatten()[0].figure
-    for tp, ax in zip(time_points, axs.flatten()):
+        fig = np.asarray(axs).flatten()[0].figure
+    for tp, fi, ax in zip(time_points, frame_indices, np.asarray(axs).flatten()):
         try:
-            wc = file_io.load_video(video_file, idx=[tp, tp+1])
+            wc = file_io.load_video(video_file, frames=(fi, fi + 1))
             title_add = ''
         except IndexError:
-            wc = np.zeros([1] + image_size + [3])
+            wc = np.zeros([1, image_size[1], image_size[0], 3])
             title_add = ' (paused or missing)'
         ax.imshow(wc[0])
         ax.axis('off')
