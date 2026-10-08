@@ -1355,8 +1355,21 @@ def plot_blink_eyelid_distance(blinks,
     plot_utils.open_axes(ax)
     ax.set_ylabel('Eyelid-to-eyelid distance') #\n(proportion of max opening)')
     ax.set_xlabel("Time (s)")
-    plot_utils.set_ax_fontsz(ax, lab=11, tk=9, name='Helvetica')        
+    plot_utils.set_ax_fontsz(ax, lab=11, tk=9, name='Helvetica')
     return ax
+
+
+def plot_blinks(*args, **kwargs):
+    """Deprecated alias for `plot_blink_eyelid_distance`
+
+    Kept for backward compatibility; issues a DeprecationWarning and passes
+    all arguments through. Use `plot_blink_eyelid_distance` instead.
+    """
+    warnings.warn("`plot_blinks` is deprecated and will be removed; use "
+                  "`plot_blink_eyelid_distance` instead.",
+                  DeprecationWarning, stacklevel=2)
+    return plot_blink_eyelid_distance(*args, **kwargs)
+
 
 def detrend_median(data, fps=45, window_seconds=20, impute_mean=(0.5, 0.5)):
     """Perform median detrending on data
