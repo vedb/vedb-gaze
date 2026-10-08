@@ -995,13 +995,15 @@ class Calibration(object):
             world image to show behind the mapped grid, by default None
         eye : str, optional
             'left' or 'right'; which eye's grid to show for binocular
-            calibrations, by default 'left'
+            calibrations (ignored for monocular calibrations, which cover a
+            single eye), by default 'left'. NOTE: the binocular branch has
+            not been run or validated (no binocular calibrations exist yet).
         n_horizontal_lines : int, optional
             number of horizontal grid lines, by default 12
         n_vertical_lines : int or None, optional
-            if None, computed from n_horizontal_lines and aspect ratio
-            of pupil points. NOTE: currently not passed on to the grid
-            computation.
+            number of vertical grid lines; if None, computed from
+            n_horizontal_lines and the aspect ratio of pupil points, by
+            default None
         n_points : int, optional
             points per grid line, by default 40
         point_size : float, optional
@@ -1022,56 +1024,53 @@ class Calibration(object):
             axis for world-coordinate plot; 'new' creates a figure, None
             skips this plot, by default 'new'
         ax_eye : matplotlib axis or None, optional
-            axis for eye-coordinate plot, by default None (skip). A list of
-            two axes is accepted but not yet handled.
+            axis for eye-coordinate plot, by default None (skip). Must be a
+            single axis (a ValueError is raised for a list of axes).
         """
 
-        if ax_eye is not None:
-            if isinstance(ax_eye, (list, tuple)):
-                ax_left, ax_right = ax_eye
-                # recursive call to plot l, r eye grids on l, r axes
+        if isinstance(ax_eye, (list, tuple)):
+            raise ValueError("`ax_eye` must be a single matplotlib axis, not a list: a monocular "
+                             "calibration covers only one eye, and plotting both eyes for "
+                             "binocular calibrations is not implemented.")
         if self.calibration_type == 'binocular_pl':
-            # Start with grid of locations for left
+            # NOTE: not yet run or validated; no binocular calibrations exist yet.
+            # Pupil Labs eye ids: eye1 (id 1) is the left eye, eye0 (id 0) the right.
             grid_pts_array_l = self._get_grid_points(
                 'left', 
                 n_points=n_points, 
                 sc=sc, 
                 n_horizontal_lines=n_horizontal_lines, 
+                n_vertical_lines=n_vertical_lines,
                 return_type='arraydict')
-            # Fill in `_id`` and `confidence` fields
-            grid_pts_array_l['id'] = np.ones_like(
-                grid_pts_array_l['timestamp'], dtype=int64)
-            grid_pts_array_l['confidence'] = np.ones_like(
-                grid_pts_array_l['timestamp'], dtype=float32)
-            # Continue with grid of locations for right
             grid_pts_array_r = self._get_grid_points(
                 'right', 
                 n_points=n_points, 
                 sc=sc, 
                 n_horizontal_lines=n_horizontal_lines, 
+                n_vertical_lines=n_vertical_lines,
                 return_type='arraydict')
-            # Fill in `_id`` and `confidence` fields
-            grid_pts_array_r['id'] = np.zeros_like(
-                grid_pts_array_r['timestamp'], dtype=int64)
-            grid_pts_array_r['confidence'] = np.ones_like(
-                grid_pts_array_r['timestamp'], dtype=float32)
             if (grid_pts_array_l is None) or (grid_pts_array_r is None):
                 grid_array = None
             else:
+                # Fill in `id` and `confidence` fields
+                for grid_pts, eye_id in [(grid_pts_array_l, 1), (grid_pts_array_r, 0)]:
+                    grid_pts['id'] = np.full_like(grid_pts['timestamp'], eye_id, dtype=np.int64)
+                    grid_pts['confidence'] = np.ones_like(grid_pts['timestamp'], dtype=np.float32)
                 gaze_binocular = self.map([grid_pts_array_l, grid_pts_array_r], 
                                           return_type='dictlist')
                 gaze = {}
-                # Separate left and right eyes
+                # Separate left (id 1) and right (id 0) eyes
                 gaze['left'] = [
-                    g for g in gaze_binocular if g['base_data'][0]['id'] == 0]
+                    g for g in gaze_binocular if g['base_data'][0]['id'] == 1]
                 gaze['left'] = dictlist_to_arraydict(gaze['left'])
                 gaze['right'] = [
-                    g for g in gaze_binocular if g['base_data'][0]['id'] == 1]
+                    g for g in gaze_binocular if g['base_data'][0]['id'] == 0]
                 gaze['right'] = dictlist_to_arraydict(gaze['right'])
                 grid_array = gaze[eye]['norm_pos']
         elif self.calibration_type in ('monocular_pl', 'monocular_tps', 'monocular_tps_cv'):
             grid_pts_list = self._get_grid_points(
-                eye, n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='arraydict')
+                eye, n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines,
+                n_vertical_lines=n_vertical_lines, return_type='arraydict')
             if grid_pts_list is None:
                 grid_array = None
             else:
@@ -1094,7 +1093,8 @@ class Calibration(object):
             ax_world.axis([0, 1, 1, 0])
         if ax_eye is not None:
             eye_array = self._get_grid_points(
-                eye, n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines, return_type='array')
+                eye, n_points=n_points, sc=sc, n_horizontal_lines=n_horizontal_lines,
+                n_vertical_lines=n_vertical_lines, return_type='array')
             if eye_array is not None:
                 ax_eye.scatter(*eye_array.T, s=point_size, c=color)
             if show_data:
