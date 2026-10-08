@@ -27,6 +27,7 @@ import yaml
 import copy
 import os
 import re
+import warnings
 
 from .options import config
 
@@ -749,7 +750,14 @@ def load_pipeline_elements(folder,
     is_verbose : int, optional
         unused, by default 1
     eye : str or tuple, optional
-        eye(s) for which to load per-eye files, by default ('left', 'right')
+        eye(s) for which to load per-eye files, by default ('left', 'right');
+        'both' is equivalent to ('left', 'right'). Pupil files are always
+        per eye. Calibration, gaze, and error files are loaded for these
+        eyes if `calibration` is a monocular calibration tag; otherwise
+        (e.g. a binocular calibration, which uses both eyes as input) they
+        are loaded from the files for eye 'both', following the naming in
+        `pipelines.pipeline_vedb`. Note that binocular calibration and gaze
+        have not been run or validated end to end.
     **kwargs
         passed to `make_file_strings` (e.g. `fov_str`, `validation_epoch`,
         `validation_checkerboard_size`). Use `fov_str` (e.g. 'fov125') to
@@ -763,12 +771,16 @@ def load_pipeline_elements(folder,
         keys as returned by `make_file_strings`: marker and cluster files
         as dicts / lists of dicts (None for missing epochs), 'calibration'
         as a dict of eye -> `Calibration` object, and pupil, gaze, and
-        error as dicts keyed by eye (see `_load_files`).
+        error as dicts keyed by eye ('left' / 'right', or 'both'; see
+        `eye`). Error values are lists, one per validation epoch, with None
+        for missing epochs.
 
     Raises
     ------
-    Exception
-        if no pupil, gaze, or error files are found for a requested step
+    FileNotFoundError
+        if no pupil, calibration, or gaze file is found for any of the
+        requested eyes (a warning lists missing files if only some are
+        missing)
     """
     from .calibration import Calibration
     folder = pathlib.Path(folder)
@@ -790,22 +802,43 @@ def load_pipeline_elements(folder,
         calibration_epoch=calibration_epoch,
         **kwargs,
     )
+    # Pupils are always per eye
+    if eye == 'both':
+        pupil_eyes = ['left', 'right']
+    else:
+        pupil_eyes = force_list(eye, convert_tuple=True)
+    # Calibration, gaze, and error are per eye for monocular calibrations, and
+    # 'both' otherwise (e.g. a binocular calibration that uses both eyes as
+    # input). Same rule `pipelines.pipeline_vedb` uses to name its outputs.
+    if (calibration is None) or ('monocular' in calibration):
+        step_eyes = pupil_eyes
+    else:
+        step_eyes = ['both']
+    mismatch_hint = ("Check that the processing tags (and `calibration_epoch`, `fov_str`) "
+                     "match the run that produced the files in this folder.")
     for k, fpath in file_paths.items():
-        if fpath is not None:
-            if k in ['calibration_marker', 'calibration_cluster',
-                     'validation_marker', 'validation_cluster',]:
-                outputs[k] = _load_files(fpath, folder, None)
-            elif k in ['calibration']:
-                if eye == 'both':
-                    outputs[k] = Calibration.load(folder / fpath%e)
-                else:
-                    outputs[k] = {}
-                    for e in force_list(eye, convert_tuple=True):
-                        outputs[k][e] = Calibration.load(folder / (fpath%e))
-            else:
-                outputs[k] = _load_files(fpath, folder, eye)
-                if outputs[k] is None:
-                    raise Exception("WTF YO")
+        if fpath is None:
+            continue
+        if k in ['calibration_marker', 'calibration_cluster',
+                 'validation_marker', 'validation_cluster',]:
+            outputs[k] = _load_files(fpath, folder, None)
+            continue
+        eyes = pupil_eyes if k == 'pupil' else step_eyes
+        if k == 'error':
+            # One file per validation epoch; missing epochs are None
+            outputs[k] = _load_files(fpath, folder, eyes)
+            continue
+        expected = dict((e, folder / (fpath % e)) for e in eyes)
+        missing = [str(f) for f in expected.values() if not f.exists()]
+        if len(missing) == len(expected):
+            raise FileNotFoundError(f"No {k} file found for eye(s) {eyes}; expected: "
+                                    f"{missing}. {mismatch_hint}")
+        if len(missing) > 0:
+            warnings.warn(f"Missing {k} file(s), skipped: {missing}")
+        if k == 'calibration':
+            outputs[k] = dict((e, Calibration.load(f)) for e, f in expected.items() if f.exists())
+        else:
+            outputs[k] = _load_files(fpath, folder, eyes)
 
     return outputs
 
