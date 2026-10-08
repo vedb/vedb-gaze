@@ -35,6 +35,12 @@ from . import utils
 from .options import config
 from .calibration import Calibration
 
+# Default processing tags (and calibration epoch) from the [defaults] section of
+# the config (package defaults.cfg, overridden by the user options.cfg). Shared
+# with `utils.make_file_strings` / `utils.load_pipeline_elements`, so processing
+# and loading use the same tags by default.
+defaults = utils.defaults
+
 
 # Directory with eye videos, world videos, marker time, etc.
 BASE_DIR = pathlib.Path(config.get('paths', 'base_dir')).expanduser()
@@ -904,19 +910,19 @@ def check_files(output_dir, template, key_list=None):
 
 ### --- Workflows --- ###
 def pipeline_vedb(session,
-                  pupil_tag='pylids_pytorch_pupils_v1',
-                  eyelid_tag='pylids_pytorch_eyelids_v1',
-                  pupil_detrend_tag=None,
-                  calibration_marker_tag='circles_halfres',
-                  calibration_split_tag=None,
-                  calibration_cluster_tag='cluster_circles',
-                  validation_marker_tag='checkerboard_halfres_4x7squares',
-                  validation_split_tag=None, 
-                  validation_cluster_tag='cluster_checkerboards',
-                  calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
-                  gaze_tag='default_mapper',
-                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
-                  calibration_epoch=0,
+                  pupil_tag=defaults['pupil'],
+                  eyelid_tag=defaults['eyelid'],
+                  pupil_detrend_tag=defaults['pupil_detrend'],
+                  calibration_marker_tag=defaults['calibration_marker'],
+                  calibration_split_tag=defaults['calibration_split'],
+                  calibration_cluster_tag=defaults['calibration_cluster'],
+                  validation_marker_tag=defaults['validation_marker'],
+                  validation_split_tag=defaults['validation_split'],
+                  validation_cluster_tag=defaults['validation_cluster'],
+                  calibration_tag=defaults['calibration'],
+                  gaze_tag=defaults['gaze'],
+                  error_tag=defaults['error'],
+                  calibration_epoch=defaults['calibration_epoch'],
                   input_base=BASE_DIR,
                   output_base=PROC_DIR,
                   is_verbose=False,
@@ -942,41 +948,50 @@ def pipeline_vedb(session,
     its tag is None. Calibration type (binocular or monocular, per eye) is
     inferred from whether 'binocular' or 'monocular' is in `calibration_tag`.
 
+    The defaults for all `*_tag` arguments and `calibration_epoch` come from
+    the [defaults] section of the config (package ``defaults.cfg``,
+    overridden by the user ``options.cfg``; see `vedb_gaze.options`), via
+    the module-level `defaults` dict, the same defaults used by
+    `utils.load_pipeline_elements`.
+
     Parameters
     ----------
     session : str
         identifier (folder name) for a vedb session, e.g. '2021_02_27_10_12_44'
     pupil_tag : str, optional
-        tag for ``config/pupil-<tag>.yaml``, by default 'pylids_pytorch_pupils_v1'
-    eyelid_tag : str, optional
-        tag for eyelid detection (also a ``config/pupil-<tag>.yaml``), by
-        default 'pylids_pytorch_eyelids_v1'
-    pupil_detrend_tag : str, optional
-        placeholder step (see `detrend_pupil`); leave as None, by default None
+        tag for ``config/pupil-<tag>.yaml``; config key 'pupil'
+    eyelid_tag : str or None, optional
+        tag for eyelid detection (also a ``config/pupil-<tag>.yaml``);
+        config key 'eyelid'
+    pupil_detrend_tag : str or None, optional
+        placeholder step (see `detrend_pupil`); leave as None; config key
+        'pupil_detrend'
     calibration_marker_tag : str, optional
-        tag for ``config/marker-<tag>.yaml`` for calibration markers, by
-        default 'circles_halfres'
-    calibration_split_tag : str, optional
-        unused except in the input hash, by default None
+        tag for ``config/marker-<tag>.yaml`` for calibration markers;
+        config key 'calibration_marker'
+    calibration_split_tag : str or None, optional
+        unused except in the input hash; config key 'calibration_split'
     calibration_cluster_tag : str, optional
-        tag for ``config/marker_parsing-<tag>.yaml``, by default 'cluster_circles'
+        tag for ``config/marker_parsing-<tag>.yaml``; config key
+        'calibration_cluster'
     validation_marker_tag : str, optional
-        tag for ``config/marker-<tag>.yaml`` for validation markers, by
-        default 'checkerboard_halfres_4x7squares'
-    validation_split_tag : str, optional
-        unused except in the input hash, by default None
+        tag for ``config/marker-<tag>.yaml`` for validation markers;
+        config key 'validation_marker'
+    validation_split_tag : str or None, optional
+        unused except in the input hash; config key 'validation_split'
     validation_cluster_tag : str, optional
-        tag for ``config/marker_parsing-<tag>.yaml``, by default 'cluster_checkerboards'
+        tag for ``config/marker_parsing-<tag>.yaml``; config key
+        'validation_cluster'
     calibration_tag : str, optional
-        tag for ``config/calibration-<tag>.yaml``, by default
-        'monocular_tps_cv_cluster_median_conf75_cut3std'
+        tag for ``config/calibration-<tag>.yaml``; config key 'calibration'
     gaze_tag : str, optional
-        tag for ``config/gaze-<tag>.yaml``, by default 'default_mapper'
+        tag for ``config/gaze-<tag>.yaml``; config key 'gaze'
     error_tag : str, optional
-        tag for ``config/error-<tag>.yaml``, by default
-        'smooth_tps_cv_clust_med_outlier4std_conf75'
+        tag for ``config/error-<tag>.yaml``, including the field-of-view
+        token (e.g. '..._fov101'); config key 'error'
     calibration_epoch : int, optional
-        which calibration epoch in marker_times.yaml to use, by default 0
+        which calibration epoch in marker_times.yaml to use; config key
+        'calibration_epoch'
     input_base : pathlib.Path, optional
         folder containing session folders, by default `BASE_DIR`
     output_base : pathlib.Path, optional

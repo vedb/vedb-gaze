@@ -63,11 +63,18 @@ base_dir = /path/to/raw/vedb/sessions        # one folder per session
 proc_dir = /path/to/processed/gaze/outputs   # outputs written to proc_dir/<session>/
 ```
 
-The `[defaults]` section sets the default processing tags used by
-`utils.load_pipeline_elements` and `utils.make_file_strings`. Note that
-`pipelines.pipeline_vedb` has its own keyword defaults, which currently differ
-(e.g. `conf75` vs `conf40` calibration). Pass tags explicitly so that
-processing and loading use the same ones.
+The `[defaults]` section sets the default processing tag for each step (and
+the calibration epoch). The same defaults are used by `pipelines.pipeline_vedb`
+for processing and by `utils.load_pipeline_elements` / `utils.make_file_strings`
+for loading, so by default both refer to the same files. (`pipeline_mri` has
+its own MRI-specific defaults.) The `error` tag includes the field-of-view
+token used to convert error to degrees, e.g. `..._conf40_fov101`.
+
+Any key in your `options.cfg` overrides the package `defaults.cfg`. Because the
+user file is created as a full copy of the package defaults, it keeps the
+defaults from the version you first imported. To pick up newer package
+defaults, delete the `[defaults]` section from your `options.cfg` (or edit the
+values there).
 
 ## How the pipeline works
 
@@ -130,30 +137,37 @@ caused by the eye tracker slipping on the head. The step is off by default
 Process a session and load the results:
 
 ```python
-from vedb_gaze import pipelines, utils, options
-import pathlib
-
+from vedb_gaze import pipelines, utils
 session = '2021_02_27_10_12_44'
-tags = dict(
-    pupil_tag='pylids_pytorch_pupils_v1',
-    eyelid_tag=None,
-    calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
-    error_tag='smooth_tps_cv_clust_med_outlier4std_conf75_fov101',
-)
-files = pipelines.pipeline_vedb(session, **tags)   # dict of output file paths
 
-# Load everything back as dicts of arrays (gaze, pupils, markers, error, ...)
-proc_dir = pathlib.Path(options.config.get('paths', 'proc_dir')).expanduser()
-el = utils.load_pipeline_elements(
-    proc_dir / session,
-    pupil=tags['pupil_tag'],
-    eyelid=None,
-    calibration=tags['calibration_tag'],
-    error='smooth_tps_cv_clust_med_outlier4std_conf75',
-    fov_str='fov101',
-)
+# Process with the default tags from the config
+files = pipelines.pipeline_vedb(session)   # dict of output file paths
+
+# Load everything back as dicts of arrays (gaze, pupils, markers, error, ...),
+# using the same default tags
+el = utils.load_pipeline_elements(pipelines.PROC_DIR / session)
 gaze_left = el['gaze']['left']   # dict with 'timestamp', 'norm_pos', 'confidence'
 ```
+
+To use non-default settings, pass the same tags to both functions (note the
+keyword names differ: `calibration_tag` vs `calibration`, etc.):
+
+```python
+files = pipelines.pipeline_vedb(
+    session,
+    calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+    error_tag='smooth_tps_cv_clust_med_outlier4std_conf75_fov125',
+)
+el = utils.load_pipeline_elements(
+    pipelines.PROC_DIR / session,
+    calibration='monocular_tps_cv_cluster_median_conf75_cut3std',
+    error='smooth_tps_cv_clust_med_outlier4std_conf75_fov125',
+)
+```
+
+When loading, `fov_str` (e.g. `fov_str='fov125'`) replaces the `fov<number>`
+token of the `error` tag, which is a shortcut for loading error estimates
+computed for a different field of view.
 
 Label eye movements and blinks:
 

@@ -26,6 +26,7 @@ import hashlib
 import yaml
 import copy
 import os
+import re
 
 from .options import config
 
@@ -40,6 +41,7 @@ for k in ['pupil', 'eyelid', 'pupil_detrend',
         defaults[k] = None
     else:
         defaults[k] = tmp
+defaults['calibration_epoch'] = config.getint('defaults', 'calibration_epoch')
 
 def read_pl_gaze_csv(session_folder, output_id):
     """Read a Pupil Player gaze export csv file
@@ -567,7 +569,7 @@ def make_file_strings(
         calibration=defaults['calibration'],
         gaze=defaults['gaze'],
         error=defaults['error'],
-        calibration_epoch=0,
+        calibration_epoch=defaults['calibration_epoch'],
         # Extra
         eye=None,
         fov_str=None,
@@ -615,13 +617,15 @@ def make_file_strings(
     error : str or None
         Error computation tag.
     calibration_epoch : int, optional
-        Calibration epoch index, by default 0.
+        Calibration epoch index; default from the package config.
     eye : str or None, optional
         Eye ('left' or 'right') inserted in filenames, by default None
         (leaves a '%s' placeholder).
     fov_str : str or None, optional
-        Field-of-view string inserted in error filenames, by default None
-        (leaves a '%s' placeholder).
+        Field-of-view token for error filenames, e.g. 'fov125', by default
+        None (use the `error` tag as given). If given, it replaces the
+        'fov<integer>' token in the `error` tag (e.g. 'fov101'); if the tag
+        has no such token, '_<fov_str>' is appended to it.
     validation_checkerboard_size : str, optional
         Checkerboard size; if not '4x7', replaces '4x7' in the
         `validation_marker` tag, by default '4x7'.
@@ -636,12 +640,14 @@ def make_file_strings(
         'calibration_cluster', 'calibration', 'gaze' (str), and
         'validation_marker', 'validation_cluster', 'error' (lists, one per
         validation epoch). A value is None if its tag is None. Templates
-        contain '%s' placeholders for `eye` and / or `fov_str` if those
-        were not given.
+        contain a '%s' placeholder for `eye` if it was not given.
     """
         # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
-    if fov_str is None:
-        fov_str = '%s'
+    if (fov_str is not None) and (error is not None):
+        if re.search(r'fov\d+', error):
+            error = re.sub(r'fov\d+', fov_str, error)
+        else:
+            error = f'{error}_{fov_str}'
     if eye is None:
         eye = '%s'
     if validation_checkerboard_size != '4x7':
@@ -672,7 +678,7 @@ def make_file_strings(
         gaze = f'gaze-{eye}-{gaze}-{calibration}-{calibration_input_hash}.npz' if gaze is not None else None,
         validation_marker = [f'markers-{validation_marker}-epoch{ve:02d}.npz' for ve in validation_epoch] if validation_marker is not None else None,
         validation_cluster =  [f'markers-{validation_marker}-{validation_cluster}-epoch{ve:02d}.npz' for ve in validation_epoch] if validation_cluster is not None else None,
-        error = [f'error-{eye}-{error}_{fov_str}-{error_input_hash}-epoch{ve:02d}.npz' for ve in validation_epoch] if error is not None else None,
+        error = [f'error-{eye}-{error}-{error_input_hash}-epoch{ve:02d}.npz' for ve in validation_epoch] if error is not None else None,
         )
     return out
 
@@ -749,7 +755,7 @@ def load_pipeline_elements(folder,
         calibration=defaults['calibration'],
         gaze=defaults['gaze'],
         error=defaults['error'],
-        calibration_epoch=0,
+        calibration_epoch=defaults['calibration_epoch'],
         is_verbose=1,
         eye=('left','right'),
         **kwargs,
@@ -769,16 +775,16 @@ def load_pipeline_elements(folder,
         processing tags for each step (see `make_file_strings`); defaults
         from the package config
     calibration_epoch : int, optional
-        calibration epoch, by default 0
+        calibration epoch; default from the package config
     is_verbose : int, optional
         unused, by default 1
     eye : str or tuple, optional
         eye(s) for which to load per-eye files, by default ('left', 'right')
     **kwargs
         passed to `make_file_strings` (e.g. `fov_str`, `validation_epoch`,
-        `validation_checkerboard_size`). Note that error filenames contain
-        an fov placeholder in addition to the eye placeholder, so loading
-        error files likely requires `fov_str` to be given.
+        `validation_checkerboard_size`). Use `fov_str` (e.g. 'fov125') to
+        load error files computed with a different field of view than the
+        one in the `error` tag.
 
     Returns
     -------
