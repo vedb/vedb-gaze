@@ -702,7 +702,8 @@ def detect_blinks(pupil_data,
             (n, 3) array of (onset, offset, duration), one row per blink
             (same format as `find_saccades_remodnav` 'saccades_onoff'); onset and offset are
             times on the `timestamp` clock (offset is the first resampled
-            time after the blink), duration is in seconds
+            time after the blink, or the last time if the blink runs to the
+            end of the data), duration is in seconds
     """
     eyelid_distance = compute_eyelid_distance(pupil_data,
                                               fps=fps,
@@ -727,7 +728,10 @@ def detect_blinks(pupil_data,
                                                     positive_velocity_threshold=positive_velocity_threshold)
     # Blink index is 
     blink_onoff_resampled_time = onoff_from_binary(blink_index_resampled_time)
-    blink_times_resampled_time = [(ts_[st], ts_[fin], dur*1/fps) for st, fin, dur in blink_onoff_resampled_time]
+    # offset index is len(ts_) for a blink still in progress at the end of the data;
+    # use the last timestamp as its offset time
+    blink_times_resampled_time = [(ts_[st], ts_[min(fin, len(ts_) - 1)], dur*1/fps)
+                                  for st, fin, dur in blink_onoff_resampled_time]
     #tt = np.asarray([(ts_[st], ts_[fin]) for st, fin, dur in blink_onoff_resampled_time])
     #blink_onoff_orig_time = vedb_gaze.utils.time_to_index(tt, ts).astype(int)
     #blink_index_orig_time = vedb_gaze.utils.onoff_to_binary(blink_onoff_orig_time, len(ts))
@@ -787,7 +791,8 @@ def detect_blinks_confidence(pupil_data,
             (n, 3) array of (onset, offset, duration), one row per blink
             (same format as `find_saccades_remodnav` 'saccades_onoff'); onset and offset are
             times on the `timestamp` clock (offset is the first resampled
-            time after the blink), duration is in seconds
+            time after the blink, or the last time if the blink runs to the
+            end of the data), duration is in seconds
     """
     # Fixed parameters
     resampling_method = 'thin-plate_spline'
@@ -819,7 +824,10 @@ def detect_blinks_confidence(pupil_data,
     
     # Blink index is 
     blink_onoff_resampled_time = onoff_from_binary(blink_index_resampled_time)
-    blink_times_resampled_time = [(ts_[st], ts_[fin], dur*1/fps) for st, fin, dur in blink_onoff_resampled_time]
+    # offset index is len(ts_) for a blink still in progress at the end of the data;
+    # use the last timestamp as its offset time
+    blink_times_resampled_time = [(ts_[st], ts_[min(fin, len(ts_) - 1)], dur*1/fps)
+                                  for st, fin, dur in blink_onoff_resampled_time]
     #tt = np.asarray([(ts_[st], ts_[fin]) for st, fin, dur in blink_onoff_resampled_time])
     #blink_onoff_orig_time = vedb_gaze.utils.time_to_index(tt, ts).astype(int)
     #blink_index_orig_time = vedb_gaze.utils.onoff_to_binary(blink_onoff_orig_time, len(ts))

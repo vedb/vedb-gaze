@@ -229,14 +229,11 @@ def match_time_points(*data, fn=np.median, window=None):
 def onoff_from_binary(data, return_duration=True):
     """Converts a binary variable data into onsets, offsets, and optionally durations
 
-    This may yield unexpected behavior if the first value of `data` is true.
-
     Parameters
     ----------
-    data : np.ndarray, 1D
+    data : array-like, 1D
         binary (bool or 0/1) array from which onsets and offsets should be
-        extracted. Must contain at least one True value (otherwise an
-        IndexError is raised).
+        extracted
     return_duration : bool, optional
         whether to include a duration column, by default True
 
@@ -246,51 +243,20 @@ def onoff_from_binary(data, return_duration=True):
         (n_events, 3) int array of (onset, offset, duration) in samples
         (or (n_events, 2) without duration). Onset is the index of the
         first True sample and offset the index of the first False sample
-        after it (exclusive end), so duration = offset - onset. For an
-        event still on at the end of `data`, offset is len(data) if it is
-        the only event, otherwise -1 (duration is computed correctly as
-        len(data) - onset in both cases).
+        after it (exclusive end; len(data) for an event still on at the end
+        of `data`), so duration = offset - onset. If `data` contains no True
+        values, the array is empty, with shape (0, 3) (or (0, 2)).
     """
-    if data[0]:
-        start_value = 1
-    else:
-        start_value = 0
-    data = data.astype(float).copy()
-
-    ddata = np.hstack([[start_value], np.diff(data)])
-    (onsets,) = np.nonzero(ddata > 0)
-    # print(onsets)
-    (offsets,) = np.nonzero(ddata < 0)
-    # print(offsets)
-    if (len(offsets) == 0) & (len(onsets) == 1):
-        offsets = [len(data)]
-        on_at_end = True
-    else:
-        on_at_end = False
-    onset_first = onsets[0] < offsets[0]
-    len(onsets) == len(offsets)
-
-    #on_at_end = False
-    on_at_start = False
-    if onset_first:
-        if len(onsets) > len(offsets):
-            offsets = np.hstack([offsets, [-1]])
-            on_at_end = True
-    else:
-        if len(offsets) > len(onsets):
-            onsets = np.hstack([-1, offsets])
-            on_at_start = True
-    onoff = np.vstack([onsets, offsets])
+    data = np.asarray(data).astype(bool).ravel()
+    # Pad with False at both ends so that every event has an onset and an offset
+    ddata = np.diff(np.hstack([[0], data.astype(int), [0]]))
+    onsets = np.flatnonzero(ddata == 1)
+    offsets = np.flatnonzero(ddata == -1)
     if return_duration:
-        duration = offsets - onsets
-        if on_at_end:
-            duration[-1] = len(data) - onsets[-1]
-        if on_at_start:
-            duration[0] = offsets[0] - 0
-        onoff = np.vstack([onoff, duration])
-
-    onoff = onoff.T.astype(int)
-    return onoff
+        onoff = np.vstack([onsets, offsets, offsets - onsets])
+    else:
+        onoff = np.vstack([onsets, offsets])
+    return onoff.T.astype(int)
 
 
 def onoff_to_binary(onoff, length):
