@@ -1,3 +1,25 @@
+"""Plotting and animation utilities for the vedb_gaze pipeline.
+
+Provides matplotlib-based visualizations for each pipeline stage: 2D
+histograms of gaze position, dot overlays on world/eye video (animations),
+pupil ellipses, calibration / validation marker positions (including image
+crops of markers at cluster centroids), gaze error maps and surfaces, 2D
+color maps for position-coded scatter plots, and a multi-panel quality
+control figure for a whole session (`plot_session_qc`).
+
+Most functions work on "arraydicts" (dicts of numpy arrays with keys such
+as 'timestamp', 'norm_pos', 'confidence'), with positions in normalized
+(0-1) image coordinates.
+
+Notes
+-----
+Depends on the external `plot_utils` and `file_io` packages. Some functions
+(`plot_eye_at_marker`) use `vedb_store`, and `show_dots` expects `vedb_store`
+objects. Two functions near the end of the module (`make_gaze_animation`,
+`label_eye_video`) reference undefined names and appear not to run as
+written. Large
+triple-quoted blocks in the module hold older, disabled code.
+"""
 import matplotlib.pyplot as plt
 from matplotlib import animation, patches, colors, gridspec
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
@@ -11,7 +33,7 @@ import plot_utils
 import file_io
 from .options import config
 from .marker_parsing import marker_cluster_stat, split_timecourse
-from .utils import load_pipeline_elements,  match_time_points
+from .utils import load_pipeline_elements,  match_time_points, get_frame_indices
 from . import calibration as vedbcalibration
 
 BASE_DIR = pathlib.Path(config.get('paths','base_dir'))
@@ -67,6 +89,14 @@ def gaze_hist(gaze,
     ax : matplotlib axis, optional
         axis into which to plot histogram, by default None, which creates
         a new figure & axis
+    vmin_x, vmax_x : float, optional
+        horizontal range of histogram bins and image extent, by default 0 and 1
+    vmin_y, vmax_y : float, optional
+        vertical range of histogram bins and image extent, by default 0 and 1
+        (y axis is displayed inverted, i.e. image-style, with vmin_y at top)
+    cmax_pct : float, optional
+        percentile of histogram values used as the upper color limit,
+        by default 97.5
 
     Returns
     -------
@@ -101,6 +131,12 @@ def circ_dist(a, b, degrees=True):
         angle(s) FROM WHICH to compute angular (aka rotational) distance
     degrees : bool
         Whether a and b are in degrees (defaults to True; False means they are in radians)
+
+    Returns
+    -------
+    dist : scalar or array
+        signed angular difference `a - b`, wrapped to [-180, 180] degrees
+        (or [-pi, pi] radians if `degrees` is False)
     """
     if degrees:
         a = np.radians(a)
@@ -119,12 +155,21 @@ def angle_hist(angles, bins=abins, ax=None):
     Parameters
     ----------
     angles : array-like
-        angles to be histogrammed
+        angles (in degrees) to be histogrammed; wrapped to [-180, 180]
+        before binning
     bins : array-like
-        bin edges. Defaults to 36 evenly spaced bins (10 deg each)
+        bin edges in degrees. Defaults to 36 evenly spaced bins (10 deg each)
     ax : matplotlib axis
-        axis into which to plot. If specified, it must hav been 
-        created with `projection='polar'`
+        axis into which to plot. If specified, it must hav been
+        created with `projection='polar'`. By default None, which creates
+        a new polar figure & axis
+
+    Notes
+    -----
+    Zero degrees is drawn at the top and angles increase clockwise. This is
+    the convention of 'gaze_err_angle' from
+    `error_computation.compute_error` (after converting to degrees).
+    Nothing is returned.
     """
     # Compute pie slices
     angles = circ_dist(angles, 0)
@@ -150,18 +195,26 @@ def plot_timestamps(timestamps, full_time, start_time=0, ax=None, **kwargs):
     Parameters
     ----------
     timestamps : array
-        timestamps for events to plot
+        timestamps (seconds) for events to plot
     full_time : array
-        array of all possible timestamps
+        array of all possible timestamps (seconds)
     start_time : int, optional
         time to subtract off `timestamps` (use if start time in `timestamps` differs
         from start time in `full_time`), by default 0
-    ax : [type], optional
+    ax : matplotlib axis, optional
         axis into which to plot, by default None, which opens a new figure
+    **kwargs
+        passed to `ax.plot`
+
+    Notes
+    -----
+    The x axis is in minutes (`full_time / 60`). Membership is tested with
+    exact equality (`np.isin`), so `timestamps - start_time` must exactly
+    match values in `full_time`.
     """
     xlim = [full_time.min()/60, full_time.max()/60]
     # Get timing for each epoch
-    calibration_time_index = np.in1d(full_time, timestamps-start_time)
+    calibration_time_index = np.isin(full_time, timestamps-start_time)
     if ax is None:
         fig, ax = plt.subplots()
     ax.plot(full_time / 60, calibration_time_index, **kwargs)
@@ -169,6 +222,16 @@ def plot_timestamps(timestamps, full_time, start_time=0, ax=None, **kwargs):
 
 
 def set_eye_axis_lims(ax, eye):
+    """Set 0-1 axis limits for an eye image axis, flipped for the left eye
+
+    Parameters
+    ----------
+    ax : matplotlib axis
+        axis to modify
+    eye : str
+        'right' sets axis to [0, 1, 0, 1]; 'left' sets it to [1, 0, 1, 0]
+        (both x and y reversed). Any other value leaves the axis unchanged.
+    """
     if eye == 'right':
         ax.axis([0, 1, 0, 1])
     elif eye == 'left':
@@ -176,9 +239,29 @@ def set_eye_axis_lims(ax, eye):
 
 
 def make_world_eye_axes(eye_left_ax=True, eye_right_ax=True, fig_scale=5):
-    """Plot world w/ markers, eyes w/ pupils
-    assumes 
-    
+    """Create a figure with a world-camera axis above two eye axes
+
+    Layout is a 5 x 4 grid: the world axis spans the top 3 rows, and the
+    left and right eye axes split the bottom 2 rows. Eye axis limits are
+    set with `set_eye_axis_lims`.
+
+    Parameters
+    ----------
+    eye_left_ax : bool, optional
+        whether to create the left eye axis, by default True
+    eye_right_ax : bool, optional
+        whether to create the right eye axis, by default True
+    fig_scale : float, optional
+        size (inches) of the longer figure dimension, by default 5
+
+    Returns
+    -------
+    world_ax : matplotlib axis
+        axis for the world camera image
+    eye_left_ax : matplotlib axis or bool
+        axis for the left eye, or False if not created
+    eye_right_ax : matplotlib axis or bool
+        axis for the right eye, or False if not created
     """
     # Set up figure & world axis
     nr_gs = 5
@@ -204,7 +287,42 @@ def plot_eye_at_marker(session, marker, pupils,
                        confidence_cmap=plt.cm.viridis,
                        n_fake_clusters=12,
                        is_verbose=True):
-    """"""
+    """Plot eye video frames at the world positions of marker clusters
+
+    For each marker cluster, an eye video frame from near the cluster's
+    median time is drawn at the cluster's mean marker position (normalized
+    0-1 world coordinates), bordered with a color that encodes the median
+    pupil confidence during that cluster.
+
+    Parameters
+    ----------
+    session : vedb_store session object
+        must provide `get_video_time(name)` and `load(name, frame_idx=...)`
+        for 'eye_left' / 'eye_right'
+    marker : dict
+        marker arraydict with 'timestamp' and 'norm_pos' fields, and
+        optionally 'marker_cluster_index'
+    pupils : dict
+        pupil arraydict with 'id' (0 = right eye, 1 = left eye) and
+        'confidence' fields; `confidence` is indexed by eye video frame
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None, which creates a new figure
+    alpha : float, optional
+        opacity of plotted images, by default 1.0
+    confidence_cmap : matplotlib colormap, optional
+        colormap for image borders by median pupil confidence, by default
+        plt.cm.viridis. Confidence values below 0.6 are set to 0.
+    n_fake_clusters : int, optional
+        if `marker` has no 'marker_cluster_index', markers are split into
+        this many equal-size consecutive blocks, by default 12
+    is_verbose : bool, optional
+        unused, by default True
+
+    Notes
+    -----
+    Imports `vedb_store`. Note that `plot_session_qc` calls this function
+    with a video file path as `session`, which will not work.
+    """
     # Get rid of me. Circular dependency.
     import vedb_store
     # marker.db_load()
@@ -289,38 +407,56 @@ def make_dot_overlay_animation(
     ----------
     video_data : array
         stack of video_data, (time, vdim, hdim, [c]), in a format showable by plt.imshow()
+        (displayed with vmin=0, vmax=255)
     video_timestamps : array
-        [n_frames] timestamps for video frames; optional, see `dot_timestamps`
-    dot_data : dict
-        [n_dots, n_frames, xy]: locations of dots to plot, either in normalized (0-1 for
-        both x and y) coordinates or in pixel coordinates (with pixel dimensions matching
-        the size of the video)
-    xx dot_timestamps : array
-        [n_dots, n_dot_frames] timestamps for dots to plot; optional if a dot location is
-        specified for each frame. However, if `dot_timestamps` do not match
-        `video_timestamps`, dot_locations are resampled (simple block average) to match
-        with video frames using these timestamps.
-    
+        [n_frames] timestamps for video frames
+    *dot_data : dict
+        one arraydict per set of dots, each with 'timestamp' and 'norm_pos'
+        ((n, 2), normalized 0-1 coordinates) fields. Dots are shown on video
+        frames whose timestamps exactly match dot timestamps.
+    downsampling_function : callable, optional
+        passed as `fn` to `match_time_points` if dot timestamps need to be
+        resampled to video timestamps, by default np.median
+    window : float, optional
+        passed to `match_time_points`, by default None (nearest-frame matching)
     dot_widths : scalar or list
-        size(s) for dots to plot
+        size(s) for dots to plot (scatter `s`), by default None
     dot_colors : matplotlib colorspec (e.g. 'r' or [1, 0, 0]) or list of colorspecs
-        colors of dots to plot. 
+        colors of dots to plot, by default None
     dot_labels : string or list of strings
-        label per dot (for legend) NOT YET IMPLEMENTED.
+        label per dot (passed to scatter `label`; no legend is drawn)
     dot_markers : string or list of strings
-        marker type for each dot
+        marker type for each dot, by default 'o'
     figsize : tuple
-        Size of figure
+        Size of figure, by default None, which gives (5 * aspect ratio, 5)
     fps : scalar
-        fps for resulting animation
+        fps for resulting animation, by default 60
+    accumulate : bool, optional
+        if True, each frame shows all earlier dots (up to, but not including,
+        the current one; earlier dots stay on frames with no match); if False
+        (default), only the current dot is shown and dots are hidden on
+        frames without a matching timestamp
+    **kwargs
+        unused
+
+    Returns
+    -------
+    anim : matplotlib.animation.FuncAnimation
+        animation with one frame per video frame (the figure itself is closed)
 
     Notes
     -----
+    The check meant to skip resampling when dot timestamps already match
+    video timestamps is always True as written, so `match_time_points` is
+    never called and dot timestamps are used as given.
+
+
     Good tutorial, fancy extras: https://alexgude.com/blog/matplotlib-blitting-supernova/
     """
     from functools import partial
 
     def prep_input(x, n):
+        """Wrap `x` in a list and repeat a single value `n` times."""
         if not isinstance(x, (list, tuple)):
             x = [x]
         if len(x) == 1:
@@ -347,7 +483,7 @@ def make_dot_overlay_animation(
         # not all, because often we use e.g. first and last timestamps of calibration epoch to select video time,
         # so the video time will be 2 frames shorter...
         acceptable_wiggle_room = 5  # frames in dot timestamps that are not in video
-        if (np.sum(np.in1d(this_dot['timestamp'], video_timestamps)) - len(this_dot['timestamp'])) < acceptable_wiggle_room:
+        if (np.sum(np.isin(this_dot['timestamp'], video_timestamps)) - len(this_dot['timestamp'])) < acceptable_wiggle_room:
             print("Timestamps already in video timestamps")
             dots_matched.append(this_dot)
         else:
@@ -357,7 +493,7 @@ def make_dot_overlay_animation(
     dots_matched = tuple(dots_matched)
     vframes = []
     for this_dot in dots_matched:
-        tmp, = np.nonzero(np.in1d(video_timestamps, this_dot['timestamp']))
+        tmp, = np.nonzero(np.isin(video_timestamps, this_dot['timestamp']))
         print("n frames detected in video is:")
         print(len(tmp))
         vframes.append(tmp)
@@ -385,6 +521,7 @@ def make_dot_overlay_animation(
     # initialization function: plot the background of each frame
 
     def init_func(fig, ax, artists):
+        """Blank the image and place each dot set at its first position."""
         for j, d in enumerate(dots):
             d.set_offsets(dots_matched[j]['norm_pos'][:1])
         im.set_array(np.zeros(im_shape))
@@ -392,6 +529,7 @@ def make_dot_overlay_animation(
 
     # animation function. This is called sequentially
     def update_func(i, artists, dots_matched, vframes):
+        """Show video frame `i` and update dot positions for that frame."""
 
         artists[0].set_array(video_data[i])
         # Loop over dots
@@ -428,11 +566,26 @@ def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
         * center: tuple (x, y)
         * axes: tuple (x length, y length)
         * angle: scalar, in degrees
-    img : array
-        underlay image to display
-    ax : matplotlib axis
-        axis into which to plot ellipse
+    img : array, optional
+        underlay image to display (in pixel coordinates), by default None
+    ax : matplotlib axis, optional
+        axis into which to plot ellipse, by default None, which creates a
+        new figure
+    center_color : matplotlib colorspec, optional
+        color of the dot plotted at the ellipse center, by default 'r'
     kwargs : passed to matplotlib.patches.Ellipse
+
+    Returns
+    -------
+    patch_h : matplotlib.patches.Ellipse
+        handle for the ellipse patch
+    pt_h : matplotlib PathCollection
+        handle for the center dot
+
+    Notes
+    -----
+    `axes` are passed directly as the Ellipse width and height (i.e. full
+    axis lengths, as in opencv `fitEllipse` output).
     """
     if ax is None:
         fig, ax = plt.subplots()
@@ -446,9 +599,28 @@ def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
     return patch_h, pt_h
 
 def _set_ellipse(ellipse_h, dot_h, ellipse, frame, eye_video_size=(1, 1)):
-    """h_s are two handles: for ellipse, for center dot
-    eye_video_size should be set to the size of the video in pixels if 
-    you want to normalize ellipse to 0-1 for plotting; default values do nothing"""
+    """Update ellipse and center-dot handles to the ellipse for one frame
+
+    Parameters
+    ----------
+    ellipse_h : matplotlib.patches.Ellipse
+        ellipse handle (e.g. from `show_ellipse`)
+    dot_h : matplotlib PathCollection
+        center dot handle (e.g. from `show_ellipse`)
+    ellipse : sequence of dict
+        per-frame ellipse dicts with 'center', 'axes', 'angle' fields
+    frame : int
+        index into `ellipse`
+    eye_video_size : scalar or tuple, optional
+        size of the video in pixels; center and axes are divided by this to
+        normalize the ellipse to 0-1 for plotting. By default (1, 1), which
+        does nothing. The angle is not rescaled.
+
+    Returns
+    -------
+    ellipse_h, dot_h
+        the updated handles
+    """
     tmp = ellipse[frame]
     ellipse_data = dict((k, np.array(v) / eye_video_size)
                 for k, v in tmp.items())
@@ -479,8 +651,23 @@ def colormap_2d(
     data1 : array (1d)
         Second dimension of data to map
     image_cmap : array (3d)
-        image of values to use for 2D color map
+        image of values to use for 2D color map, (rows, cols, channels);
+        by default BuOr_2D (module-level 256 x 256 RGB map)
+    vmin0, vmax0 : float, optional
+        range of `data0`, mapped to image columns (left to right); by
+        default None, which uses the data min / max
+    vmin1, vmax1 : float, optional
+        range of `data1`, mapped to image rows (bottom to top, i.e. high
+        values of `data1` index the first row); by default None, which uses
+        the data min / max
+    map_to_uint8 : bool, optional
+        whether to scale output (assumed 0-1) to 0-255 uint8, by default False
 
+    Returns
+    -------
+    colored : array
+        (n, channels) colors, one per data point. Values outside the ranges
+        are clipped; NaNs map to index 0.
     """
     norm0 = colors.Normalize(vmin0, vmax0)
     norm1 = colors.Normalize(vmin1, vmax1)
@@ -503,8 +690,34 @@ def colormap_2d(
 
 def show_dots(mk, start=0, end=10, size=0.25, fps=30, video='world_camera', accumulate=False, **kwargs):
     """Make an animation of detected markers as dots overlaid on video
+
     mk is a vedb_store class (MarkerDetection or PupilDetection so far)
     Set vdieo, size, frame rate according to what mk is!
+
+    Parameters
+    ----------
+    mk : vedb_store object
+        object with `db_load()` and a `session` attribute; passed directly
+        as dot data to `make_dot_overlay_animation`, so it must also support
+        indexing by 'timestamp' and 'norm_pos'
+    start : float, optional
+        start time (seconds) of video segment to load, by default 0
+    end : float, optional
+        end time (seconds) of video segment to load, by default 10
+    size : float, optional
+        video resize factor passed to `session.load`, by default 0.25
+    fps : float, optional
+        frame rate of the animation, by default 30
+    video : str, optional
+        name of video to load from session, by default 'world_camera'
+    accumulate : bool, optional
+        passed to `make_dot_overlay_animation`, by default False
+    **kwargs
+        passed to `make_dot_overlay_animation`
+
+    Returns
+    -------
+    anim : matplotlib.animation.FuncAnimation
     """
     mk.db_load()
     vtime, vdata = mk.session.load(video, time_idx=(start, end), size=size)
@@ -523,17 +736,19 @@ def average_frames(session, times, to_load='world_camera'):
     
     Parameters
     ----------
-    ses : TYPE
-        Description
-    times : TYPE
-        Description
+    session : vedb_store session object
+        object with a `load(name, time_idx=...)` method returning
+        (timestamps, frames)
+    times : array-like
+        times (seconds) at which to load frames; for each, the first frame
+        in [t, t + 1) is used
     to_load : str, optional
-        Description
-    
+        name of video to load, by default 'world_camera'
+
     Returns
     -------
-    TYPE
-        Description
+    array
+        mean of the loaded frames, cast to the frames' dtype
     """
     images = []
     for t0 in times:
@@ -543,20 +758,32 @@ def average_frames(session, times, to_load='world_camera'):
 
 
 def show_average_frames(ses, times, n_images=4, ax=None, extent=(0, 1, 1, 0), mode='linear', to_load='world_camera'):
-    """Summary
-    
+    """Show the average of video frames sampled from a set of times
+
     Parameters
     ----------
-    ses : TYPE
-        Description
-    times : TYPE
-        Description
+    ses : vedb_store session object
+        passed to `average_frames`
+    times : array-like
+        candidate times (seconds) from which to sample frames
     n_images : int, optional
-        Description
-    ax : None, optional
-        Description
+        number of frames to average, by default 4
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None, which creates a new figure
+    extent : tuple, optional
+        image extent for `imshow`, by default (0, 1, 1, 0)
+    mode : str, optional
+        'linear' takes evenly spaced samples from `times`; anything else
+        samples `n_images` times at random without replacement,
+        by default 'linear'
     to_load : str, optional
-        Description
+        name of video to load, by default 'world_camera'
+
+    Notes
+    -----
+    In 'linear' mode the step is `len(times) // n_images`, minus 1 if that
+    evenly divides `len(times)`; as written this raises an error (step of
+    0, or modulo by zero) whenever `len(times) < 2 * n_images`.
     """
     if mode == 'linear':
         nn = len(times) // n_images
@@ -586,43 +813,57 @@ def plot_error(err,
     confidence_threshold=0.6,
     label_contours=False,
     contour_fontsize=16):
-    """_summary_
+    """Plot gaze error (degrees) across the world camera field of view
+
+    Optionally layers a 2D histogram of gaze positions, a translucent image
+    of the interpolated error surface, error contours, and a scatter of
+    error at each validation marker position, all in normalized (0-1)
+    world coordinates.
 
     Parameters
     ----------
-    err : _type_
-        _description_
-    eye : str, optional
-        _description_, by default 'left'
-    gaze : _type_, optional
-        _description_, by default None
-    ax : _type_, optional
-        _description_, by default None
+    err : dict
+        error estimation output with fields 'gaze_err_image' (2D
+        interpolated error, degrees), 'xgrid', 'ygrid' (grid coordinates for
+        the error image), 'marker' ((n, 2) normalized marker positions) and
+        'gaze_err' ((n,) error in degrees at each marker)
+    gaze : dict, optional
+        gaze arraydict ('norm_pos', 'confidence'); if provided, a gaze
+        histogram is drawn with `gaze_hist`, by default None
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None, which creates a new figure
     cmap : str, optional
-        _description_, by default 'inferno_r'
+        colormap for contours and marker scatter, by default 'inferno_r'
+        (the error image always uses 'inferno_r')
     cmap_hist : str, optional
-        _description_, by default 'gray_r'
+        colormap for gaze histogram, by default 'gray_r'
     levels : tuple, optional
-        _description_, by default (1, 2.5, 5, 10)
+        error levels (degrees) for contours; None or empty skips contours,
+        by default (1, 2.5, 5, 10)
     err_vmax : int, optional
-        _description_, by default 10
+        upper color limit for error (degrees), by default 10
     err_vmin : int, optional
-        _description_, by default 0
+        lower color limit for error (degrees), by default 0
     plot_image : bool, optional
-        _description_, by default True
+        whether to show the error image, by default True
     scatter_size : int, optional
-        _description_, by default 3
+        size of marker scatter points, by default 3
     hist_bins_x : int, optional
-        _description_, by default 81
+        horizontal bins for gaze histogram, by default 81
     hist_bins_y : int, optional
-        _description_, by default 61
+        vertical bins for gaze histogram, by default 61
     confidence_threshold : float, optional
-        _description_, by default 0.6
+        minimum gaze confidence for histogram, by default 0.6
+    label_contours : bool, optional
+        whether to label contour lines, by default False
+    contour_fontsize : int, optional
+        font size for contour labels, by default 16
 
     Returns
     -------
-    _type_
-        _description_
+    list
+        plot handles: [histogram image (only if `gaze` given), error image
+        or None, contour set or None, marker scatter]
     """
     if ax is None:
         fig, ax = plt.subplots()
@@ -675,7 +916,38 @@ def plot_error_markers(markers, gaze,
                                 marker_color=(1.0, 0, 0), 
                                 ):
     """Plot validation markers and gaze at relevant timepoints
-    
+
+    Draws a line from each marker position to the matched gaze position,
+    with a color gradient from `marker_color` to `eye_color`, in normalized
+    (0-1) world coordinates.
+
+    Parameters
+    ----------
+    markers : dict or array
+        marker arraydict ('timestamp', 'norm_pos'), or an (n, 2) array of
+        marker positions
+    gaze : dict or array
+        gaze arraydict ('timestamp', 'norm_pos', 'confidence'), or an
+        (n, 2) array of gaze positions. If both inputs are arrays they are
+        used as-is (no confidence filtering). If dicts with different
+        lengths, gaze is matched to marker timestamps with
+        `match_time_points`.
+    confidence_threshold : float, optional
+        minimum gaze confidence for points to keep (dict inputs only),
+        by default 0
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None, which creates a new figure
+    do_gradients : bool, optional
+        whether to draw the marker-to-gaze lines, by default True
+    eye_color : tuple, optional
+        RGB color at the gaze end of the lines, by default (0.0, 0.0, 0.9)
+    marker_color : tuple, optional
+        RGB color at the marker end of the lines, by default (1.0, 0, 0)
+
+    Notes
+    -----
+    Prints a message and returns None without plotting if fewer than 10
+    points pass the confidence threshold.
     """
     # left: (0.0, 0.0, 0.9)
     # right: (0.95, 0.85, 0)
@@ -694,7 +966,8 @@ def plot_error_markers(markers, gaze,
         vp = markers['norm_pos']
         gl_ci = gaze_matched['confidence'] > confidence_threshold        
         if (gl_ci.sum() < 10):
-            print("Insufficient number of points retained after assessing pupil confidence for v epoch %d" % j)
+            print("Insufficient number of points retained after assessing pupil confidence "
+                  "(%d < 10); not plotting." % gl_ci.sum())
             return
         vp = vp[gl_ci]
         gl = gl[gl_ci]
@@ -709,6 +982,37 @@ def plot_error_markers(markers, gaze,
 
 
 def load_markers(markers, video_fpath, fn=np.nanmedian, clusters=None, crop_size=(128, 128), tdelta=0.5):
+    """Load world video crops centered on each marker cluster
+
+    Parameters
+    ----------
+    markers : dict
+        marker arraydict with 'norm_pos' and 'timestamp' fields (and
+        'marker_cluster_index' if `clusters` is not given)
+    video_fpath : str or pathlib.Path
+        path to world video file, loaded with `file_io.load_video`
+    fn : callable, optional
+        statistic used to summarize each cluster (via
+        `marker_cluster_stat`), by default np.nanmedian
+    clusters : array-like, optional
+        cluster index per marker, by default None (use
+        markers['marker_cluster_index'])
+    crop_size : tuple, optional
+        size (pixels) of the crop around each marker, also used as output
+        size, by default (128, 128)
+    tdelta : float, optional
+        duration (seconds) of video loaded from each cluster's summary
+        time; only the first frame is kept, by default 0.5
+
+    Returns
+    -------
+    marker_positions : array
+        (n_clusters, 2) summary marker positions (normalized 0-1)
+    marker_times : array
+        (n_clusters,) summary timestamps
+    marker_crops : list of array
+        one RGB crop per cluster
+    """
     mk_cut = marker_cluster_stat(markers, 
                                  fn=fn,
                                  clusters=clusters,
@@ -731,6 +1035,33 @@ def load_markers(markers, video_fpath, fn=np.nanmedian, clusters=None, crop_size
 
 def show_clustered_markers(markers, folder, fn=np.nanmedian, clusters=None, 
                            crop_size=(128, 128), tdelta=0.25, ax=None, n_blocks=12, imsz=0.15):
+    """Plot world video crops of each marker cluster at its world position
+
+    Parameters
+    ----------
+    markers : dict
+        marker arraydict with 'norm_pos' and 'timestamp' fields
+    folder : str or pathlib.Path
+        if a pathlib.Path, used directly as the video file path; otherwise
+        joined to BASE_DIR (i.e. `BASE_DIR / folder`) and passed as the
+        video path to `load_markers`
+    fn : callable, optional
+        statistic used to summarize each cluster, by default np.nanmedian
+    clusters : array-like, optional
+        cluster index per marker. If None and `markers` has no
+        'marker_cluster_index', markers are split into `n_blocks` equal
+        consecutive blocks. By default None
+    crop_size : tuple, optional
+        crop size in pixels, by default (128, 128)
+    tdelta : float, optional
+        passed to `load_markers`, by default 0.25
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None
+    n_blocks : int, optional
+        number of blocks if clusters must be faked, by default 12
+    imsz : float, optional
+        displayed size of each crop (axis units), by default 0.15
+    """
     if (clusters is None) and ('marker_cluster_index' not in markers):
         n_pts = len(markers['norm_pos'])
         clusters = np.floor(
@@ -754,28 +1085,36 @@ def plot_error_interpolation_surface(marker, gaze_err, xgrid, ygrid, gaze_err_im
     
     Parameters
     ----------
-    marker : TYPE
-        Description
-    gaze_err : TYPE
-        Description
-    xgrid : TYPE
-        Description
-    ygrid : TYPE
-        Description
-    gaze_err_image : TYPE
-        Description
+    marker : array
+        (n, 2) normalized (0-1) validation marker positions
+    gaze_err : array
+        (n,) gaze error (degrees) at each marker
+    xgrid : array
+        2D grid of x coordinates for `gaze_err_image`
+    ygrid : array
+        2D grid of y coordinates for `gaze_err_image`
+    gaze_err_image : array
+        2D interpolated error surface (degrees)
     vmin : int, optional
-        Description
-    vmax : None, optional
-        Description
-    ax : None, optional
-        Description
+        lower color limit, by default 0
+    vmax : float, optional
+        upper color / z limit, by default None, which uses 1.1 x the max
+        of `gaze_err`
+    ax : matplotlib 3D axis, optional
+        axis into which to plot (must have `projection='3d'`), by default
+        None, which creates a new figure
     cmap : str, optional
-        Description
+        colormap for marker scatter (not the surface), by default 'viridis_r'
     azimuth : int, optional
-        Description
+        view azimuth (degrees), by default 60
     elevation : int, optional
-        Description
+        view elevation (degrees), by default 30
+    **kwargs
+        unused
+
+    Notes
+    -----
+    x and y limits are fixed at [0.2, 0.8].
     """
     if vmax is None:
         vmax = np.nanmax(gaze_err) * 1.1
@@ -822,10 +1161,21 @@ def plot_session_qc(folder,
         ):
     """Make quality control plot for VEDB session
 
+    Creates (or fills) a 3 x 4 grid of axes summarizing each pipeline step:
+    calibration / validation marker positions, pupil positions during
+    calibration / validation for each eye, calibrations, gaze error maps,
+    a timeline of pupil confidence and marker detections, and histograms of
+    pupil confidence. Steps that are missing (None) or failed are reported
+    as text in the corresponding axes.
+
     Parameters
     ----------
-    session : _type_
-        _description_
+    folder : str or pathlib.Path
+        session folder name; used in the figure title and, if
+        `video_fpath` is None, to build `BASE_DIR / folder`
+    video_fpath : str or pathlib.Path, optional
+        world video path, used only for slow plots (`do_slow_plots`),
+        by default None
     pupil : dict, optional
         dict with keys `left` and `right` for pupil detection results for
         left and right eyes, respectively. Results can be either dicts
@@ -846,42 +1196,67 @@ def plot_session_qc(folder,
         by default None
     calibration : dict, optional
         dict with keys `left` and `right` (or `both`, for binocular) 
-        for calibrations computed for left and right eyes, respectively. 
-        Results can be either dicts output by vedb_gaze.pupil_detection_pl.detect_pupils() or 
-        a PupilDetection class returned from the `vedb_store` database.
+        for calibrations computed for left and right eyes, respectively.
+        Values can be either `vedb_gaze.calibration.Calibration` instances or
+        vedb_store Calibration objects (which are `.load()`-ed and their
+        `.calibration` attribute used). Only 'left' and 'right' are plotted.
         by default None
-    validation_marker : _type_, optional
-        _description_, by default None
-    validation_cluster : _type_, optional
-        _description_, by default None
+    validation_marker : list, optional
+        per-epoch validation marker detections (dicts or vedb_store
+        objects with 'norm_pos' and 'timestamp'); the element at
+        `validation_marker_epoch` is used, by default None
+    validation_cluster : list, optional
+        per-epoch filtered / clustered validation markers; the element at
+        `validation_marker_epoch` is used, by default None
     gaze : dict, optional
         dict of {'left': gaze_left, 'right': gaze_right} or None, by default None
         `gaze_left` and `gaze_right` here are outputs of gaze estimation, either
         vedb_store objects or dictionaries (as output by `vedb_gaze.gaze_mapping.gaze_mapper`)
-    error : _type_, optional
+    error : dict, optional
         dict of {'left': error_left, 'right': error_right} or None, by default None
-        `error_left` and `error_right` here are outputs of error estimation, either
-        vedb_store objects or dictionaries (as output by `vedb_gaze.error_computation.compute_error`)
+        `error_left` and `error_right` here are lists (one per validation
+        epoch) of outputs of error estimation, either
+        vedb_store objects or dictionaries (as output by `vedb_gaze.error_computation.compute_error`);
+        the element at `validation_marker_epoch` is plotted with `plot_error`
     do_slow_plots : bool, optional
-        _description_, by default False
-    axs : _type_, optional
-        _description_, by default None
+        if True, show video crops of markers and eye images at markers
+        (`show_clustered_markers`, `plot_eye_at_marker`) instead of
+        scatter plots, by default False
+    axs : array of matplotlib axes, optional
+        3 x 4 array of axes into which to plot, by default None, which
+        creates a new figure
     fig_scale : int, optional
-        _description_, by default 14
+        figure size scale (inches) for a new figure, by default 14
     val_color : tuple, optional
-        _description_, by default (0.9, 0.0, 0.0)
+        timeline color for filtered validation markers, by default (0.9, 0.0, 0.0)
     val_color_lt : tuple, optional
-        _description_, by default (0.9, 0.5, 0.5)
+        timeline color for all detected validation markers, by default (0.9, 0.5, 0.5)
     cal_color : tuple, optional
-        _description_, by default (0.0, 0.9, 0.0)
+        timeline color for filtered calibration markers, by default (0.0, 0.9, 0.0)
     cal_color_lt : tuple, optional
-        _description_, by default (0.5, 0.9, 0.5)
-    font_kw : _type_, optional
-        _description_, by default None
-    fpath : _type_, optional
-        _description_, by default None
+        timeline color for all detected calibration markers, by default (0.5, 0.9, 0.5)
+    font_kw : dict, optional
+        font keyword args for titles / text, by default None, which uses
+        dict(fontname='Helvetica', fontsize=14)
+    fpath : str or pathlib.Path, optional
+        if given, figure is saved here (dpi=100), by default None
+    close_figure : bool, optional
+        whether to close the figure at the end, by default False
+    pupil_confidence_threshold : float, optional
+        threshold shown on pupil confidence histograms and used to compute
+        the percent of pupil samples kept, by default 0.7
+    calibration_marker_epoch : int, optional
+        unused, by default 0
+    validation_marker_epoch : int, optional
+        index of the validation epoch to plot, by default 0
     do_memory_cleanup : bool, optional
-        _description_, by default False
+        if True, set `_data = None` on non-dict (vedb_store) inputs after
+        plotting to free memory, by default False
+
+    Notes
+    -----
+    Nothing is returned. Timeline x axis is in minutes; the figure title
+    gives session duration from the max pupil timestamp.
     """
     # Lazy functions         
     def check_status(x):
@@ -898,6 +1273,7 @@ def plot_session_qc(folder,
             return 'ok'
 
     def check_failed(x):
+        """Return True if `x` is None, empty, or flagged as failed."""
         if x is None:
             return True
         if isinstance(x, dict):
@@ -907,7 +1283,6 @@ def plot_session_qc(folder,
                     list_values.append(len(vv))
                 elif isinstance(vv, list):
                     list_values.append(len(vv))
-            print(list_values)
             failed = all([v == 0 for v in list_values])
         elif isinstance(x, list):
             failed = (len(x) == 0) or np.all([check_failed(x_) for x_ in x])
@@ -919,6 +1294,7 @@ def plot_session_qc(folder,
         return failed
 
     def disp_fail(msg, ax, title=None, axis=(0, 1, 0, 1), **font_kw):
+        """Write a centered failure message (and optional title) in `ax`."""
         ax.text(0.5, 0.5, msg, ha='center', va='center', **font_kw)
         ax.axis(axis)
         if title is not None:
@@ -1054,17 +1430,19 @@ def plot_session_qc(folder,
         else:
             # Raw detection OK, just filtering failed
             title='Validation Markers\n(raw, filtering %s)'%(status['validation_cluster'])
+            # Raw (unclustered) detections for the selected validation epoch
+            validation_marker_raw = validation_marker[validation_marker_epoch]
             if do_slow_plots:
-                show_clustered_markers(validation_marker,
-                                                           session, 
+                show_clustered_markers(validation_marker_raw,
+                                                           video_fpath, 
                                                            n_blocks=8,
                                                            ax=axs[0,2]
                                                           )
             else:
-                cols_mkv = colormap_2d(*validation_marker['norm_pos'].T)
-                axs[0,2].scatter(*validation_marker['norm_pos'].T, 
+                cols_mkv = colormap_2d(*validation_marker_raw['norm_pos'].T)
+                axs[0,2].scatter(*validation_marker_raw['norm_pos'].T, 
                                  c=cols_mkv, alpha=0.1, )
-            mk_for_eyes_v = validation_marker
+            mk_for_eyes_v = validation_marker_raw
     else:
         # validation markers detected and filtered correctly.
         if do_slow_plots:
@@ -1257,6 +1635,30 @@ def plot_session_qc(folder,
 
 
 def gaze_rect(gaze_position, hdim, vdim, ax=None, linewidth=1, edgecolor='r', **kwargs):
+    """Draw an unfilled rectangle centered on a gaze position
+
+    Parameters
+    ----------
+    gaze_position : array-like
+        (x, y) center of the rectangle, in axis units (e.g. normalized 0-1)
+    hdim : float
+        rectangle width, in the same units
+    vdim : float
+        rectangle height, in the same units
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None (current axis)
+    linewidth : float, optional
+        edge line width, by default 1
+    edgecolor : matplotlib colorspec, optional
+        edge color, by default 'r'
+    **kwargs
+        passed to `matplotlib.patches.Rectangle`
+
+    Returns
+    -------
+    matplotlib.patches.Rectangle
+        handle for the added rectangle
+    """
     if ax is None:
         ax = plt.gca()
     # Create a Rectangle patch
@@ -1817,7 +2219,7 @@ def make_gaze_animation(paths,
                         raise_error=False,
                     ):
     """Make radical gaze animation
-    
+
     paths must contain:
     pupil_left
     pupil_right
@@ -1830,6 +2232,42 @@ def make_gaze_animation(paths,
     eye_timestamps_left
     eye_timestamps_right
 
+    Intended layout: left eye, right eye and gaze-centered world crop on
+    top, full world video with gaze rectangles / dots below.
+
+    Parameters
+    ----------
+    paths : dict
+        file paths (pathlib.Path for pupil / gaze .npz files, which are
+        checked with `.exists()`); 'eye_left', 'eye_right' and 'world'
+        appear to be indexable with the file path at index 1
+    rect_size : tuple, optional
+        size (pixels) of the gaze-centered crop / rectangle, by default
+        (600, 600)
+    start_time, end_time : float, optional
+        unused, by default 0 and 5
+    fps : float, optional
+        animation frame rate, by default 30
+    world_size_factor : float, optional
+        resize factor for world video, by default 0.25
+    hspace, wspace : float, optional
+        GridSpec spacing, by default 0.1 and None
+    eye_left_color : tuple, optional
+        RGB color for left-eye gaze / pupil, by default (1.0, 0.5, 0.0)
+    eye_right_color : tuple, optional
+        RGB color for right-eye gaze / pupil, by default (0.0, 0.5, 1.0)
+    raise_error : bool, optional
+        unused, by default False
+
+    Returns
+    -------
+    anim : matplotlib.animation.FuncAnimation
+
+    Notes
+    -----
+    Appears to be a partially ported method: it references undefined
+    names (`self`, `ses`, `get_session_info`, `utils`) and will raise a
+    NameError as written. Uses module-level globals to track eye frames.
     """
     from matplotlib.gridspec import GridSpec
     global eye_left_frame
@@ -1958,6 +2396,7 @@ def make_gaze_animation(paths,
         
 
         def init():
+            """Reset world, gaze, eye and pupil artists to initial state."""
             to_return = [world_h]
             world_h.set_array(np.zeros_like(world[0]))
             
@@ -1988,6 +2427,7 @@ def make_gaze_animation(paths,
             return to_return
 
         def animate(i):
+            """Draw world frame `i`, advancing eye videos to match its time."""
             global eye_left_frame
             global eye_right_frame
             global eye_right_image
@@ -2052,30 +2492,61 @@ def show_session(folder,
                 pct_fin=0.90, 
                 sc=2, 
                 axs=None):
-    """Quickie visualization of frames from a session"""
+    """Quickie visualization of frames from a session
+
+    Shows `n_frames` world frames at evenly spaced times between
+    `pct_start` and `pct_fin` of the recording duration. Each time is
+    shown as the first world frame at or after it.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        session folder containing 'worldPrivate.mp4' and
+        'world_timestamps_0start.npy'
+    n_frames : int, optional
+        number of frames to show, by default 4
+    pct_start : float, optional
+        start of sampled range as a fraction of recording duration,
+        by default 0.10
+    pct_fin : float, optional
+        end of sampled range as a fraction of recording duration,
+        by default 0.90
+    sc : float, optional
+        per-subplot size scale (inches), by default 2
+    axs : matplotlib axis or array of axes, optional
+        axes into which to plot (at least `n_frames`), by default None
+        (new figure)
+
+    Returns
+    -------
+    fig : matplotlib figure
+    """
+    folder = pathlib.Path(folder)
     video_file = folder / 'worldPrivate.mp4'
-    time_file = folder / 'world_timestamps_0start.mp4'
+    time_file = folder / 'world_timestamps_0start.npy'
     world_time = np.load(time_file)
-    recording_duratio = world_time[-1] - world_time[0]
-    image_size = [2048, 1536]
+    # Times relative to start of recording
+    world_time = world_time - world_time[0]
+    recording_duration = world_time[-1]
+    image_size = [2048, 1536]  # width, height
     ar = image_size[0] / image_size[1]
     st = int(np.floor(recording_duration * pct_start))
     fin = int(np.floor(recording_duration * pct_fin))
-    #print(st, fin)
     time_points = np.linspace(st, fin, n_frames)
-    #print(time_points)
-    nr,nc = vmt.plot_utils.find_squarish_dimensions(n_frames)
-    if ax is None:
+    # First frame at or after each time point
+    frame_indices = np.minimum(np.searchsorted(world_time, time_points), len(world_time) - 1)
+    nr,nc = plot_utils.find_squarish_dimensions(n_frames)
+    if axs is None:
         fig, axs = plt.subplots(nc, nr, 
                                 figsize=(nr*sc * ar, nc*sc))
     else:
-        fig = axs.flatten()[0].figure
-    for tp, ax in zip(time_points, axs.flatten()):
+        fig = np.asarray(axs).flatten()[0].figure
+    for tp, fi, ax in zip(time_points, frame_indices, np.asarray(axs).flatten()):
         try:
-            wc = file_io.load_video(video_file, idx=[tp, tp+1])
+            wc = file_io.load_video(video_file, frames=(fi, fi + 1))
             title_add = ''
         except IndexError:
-            wc = np.zeros([1] + image_size + [3])
+            wc = np.zeros([1, image_size[1], image_size[0], 3])
             title_add = ' (paused or missing)'
         ax.imshow(wc[0])
         ax.axis('off')
@@ -2085,7 +2556,26 @@ def show_session(folder,
 
 
 def background_fill_blocks(onoff, fcol=(.9, .9, .9), zorder=-1, ylim=None, ax=None):
-    """Shade between each onset and offset in `onoff`"""
+    """Shade between each onset and offset in `onoff`
+
+    Parameters
+    ----------
+    onoff : array-like
+        (n, 2) [onset, offset] pairs in x-axis units
+    fcol : matplotlib colorspec, optional
+        fill color, by default (.9, .9, .9)
+    zorder : float, optional
+        z-order of the fills, by default -1 (behind other artists)
+    ylim : tuple, optional
+        vertical extent of the fills, by default None (current y limits)
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None (current axis)
+
+    Returns
+    -------
+    h : list of matplotlib Polygon or None
+        handle from the last `ax.fill` call (None if `onoff` is empty)
+    """
     if ax is None:
         ax = plt.gca()
     if ylim is None:
@@ -2103,9 +2593,44 @@ def background_fill_blocks(onoff, fcol=(.9, .9, .9), zorder=-1, ylim=None, ax=No
 
 # Pylids video overlay
 def label_eye_video(eye_video_file, eye_data, st=0, fin=None, eye_alpha=0.2,eye_color=(1, 0, 1), eyelid_data=None, eye_timestamp_file=None, figsize=(5, 5)):
-    """Assumes eye_video_file and eye_data have same timestamps
-    
+    """Animate pupil ellipses overlaid on an eye video
+
+    Assumes eye_video_file and eye_data have same timestamps
+
     st and fin are times in seconds starting from 0 (at start of video)
+
+    Parameters
+    ----------
+    eye_video_file : str or pathlib.Path
+        eye video file, opened with `file_io.load_mp4`
+    eye_data : dict
+        pupil detection output with an 'ellipse' field (per-frame ellipse
+        dicts in pixels) and, if `eye_timestamp_file` is None, a
+        'timestamps' field
+    st : float, optional
+        start time (seconds), by default 0
+    fin : float, optional
+        end time (seconds), by default None (last timestamp)
+    eye_alpha : float, optional
+        opacity of the ellipse fill, by default 0.2
+    eye_color : tuple, optional
+        RGB color of the ellipse and center dot, by default (1, 0, 1)
+    eyelid_data : optional
+        unused (eyelid plotting not implemented), by default None
+    eye_timestamp_file : str or pathlib.Path, optional
+        .npy file of eye timestamps, by default None
+    figsize : tuple, optional
+        figure size, by default (5, 5)
+
+    Returns
+    -------
+    anim : matplotlib.animation.FuncAnimation
+
+    Notes
+    -----
+    As written this does not run: `ax`, `ellipse_data`, `n_frames` and
+    `fps` are undefined. Ellipses are normalized by `eye_image.shape[:2]`,
+    which is (rows, cols) rather than (width, height).
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -2133,6 +2658,7 @@ def label_eye_video(eye_video_file, eye_data, st=0, fin=None, eye_alpha=0.2,eye_
                             facecolor=eye_color + (eye_alpha,),
                             ax=ax)
     def init():
+        """Blank the eye image and set the ellipse to the start frame."""
         imh.set_array(np.zeros_like(eye_image))
         _ = _set_ellipse(ell_h, pt_h, eye_data['ellipse'], st_frame, eye_video_size=eye_image.shape[:2])
         to_return = [imh, ell_h, pt_h]
@@ -2141,6 +2667,7 @@ def label_eye_video(eye_video_file, eye_data, st=0, fin=None, eye_alpha=0.2,eye_
         return to_return
     
     def animate(i):
+        """Read the next eye frame and update the ellipse for frame `i`."""
         # Update
         success, eye_image = eye_vid.VideoObj.read()
         assert success, "Could not read eye video frame"
@@ -2155,13 +2682,40 @@ def label_eye_video(eye_video_file, eye_data, st=0, fin=None, eye_alpha=0.2,eye_
 
 def plot_at_times(tt, y, time_start, time_end, 
                   time_units='seconds', ax=None, **kwargs):
+    """Plot `y` against time `tt` within a time window
+
+    Parameters
+    ----------
+    tt : array
+        timestamps (seconds)
+    y : array
+        values to plot, same length as `tt`
+    time_start : float
+        start of window, in `time_units`
+    time_end : float
+        end of window, in `time_units`
+    time_units : str, optional
+        'seconds' / 's' or 'minutes' / 'm'; the x axis is plotted in these
+        units, by default 'seconds'
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None, which creates a new figure
+    **kwargs
+        passed to `ax.plot`
+
+    Raises
+    ------
+    ValueError
+        if `time_units` is not 'seconds' / 's' or 'minutes' / 'm'
+    """
     if ax is None:
         _, ax = plt.subplots()
     if time_units in ('seconds', 's'):
         multiplier = 1
     elif time_units in ('minutes', 'm'):
         multiplier = 60
-    st, fin = vedb_store.utils.get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
+    else:
+        raise ValueError(f"time_units={time_units!r} not supported; use 'seconds' ('s') or 'minutes' ('m').")
+    st, fin = get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
     ax.plot(tt[st:fin] / multiplier, y[st:fin], **kwargs)
 
 

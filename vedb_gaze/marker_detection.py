@@ -1,3 +1,12 @@
+"""Detection of calibration and validation markers in world-camera video.
+
+Provides `find_concentric_circles` (calibration markers, via the Pupil Labs
+circle detector) and `find_checkerboard` (validation markers, via OpenCV).
+These are the functions named by ``config/marker-<tag>.yaml`` and run by the
+`pipelines.marker_detection` step. Both return dicts of arrays with
+'timestamp', 'location' (pixels in the full-size world video) and 'norm_pos'
+(normalized 0-1 image coordinates).
+"""
 from .utils import dictlist_to_arraydict
 from .externals.circle_detector import find_pupil_circle_marker
 import numpy as np
@@ -12,6 +21,7 @@ from multiprocessing import Pool, set_start_method, get_context
 from itertools import repeat
 
 def _opencv_ellipse_to_dict(ellipse_dict):
+    """Convert an ellipse detection to a Pupil Labs-style dict. Unused, and apparently unfinished: builds `data` but returns None."""
     data = {}
     data["ellipse"] = {
         "center": (ellipse_dict.ellipse.center[0], ellipse_dict.ellipse.center[1]),
@@ -56,34 +66,48 @@ def find_concentric_circles(video_file,
         batch_size=None,
         progress_bar=None):
     """Use PupilLabs circle detector to find concentric circles
-    
-    Assumes uint8 RGB image input
+
+    Frames are loaded in batches as grayscale, resized by `scale`, and
+    processed frame-by-frame (in parallel if `n_cores` is not None).
 
     Parameters
     ----------
-    video_file : string
-        video file to parse for checkerboards
-    timestamp_file : string
-        timestamp file to accompany video file, with timestamps per frame
+    video_file : str
+        world video file to parse for concentric circle markers
+    timestamp_file : str
+        .npy timestamp file to accompany video file, with one timestamp per frame
     scale : float, optional
-        [description], by default 1.0
-    start_frame : [type], optional
-        [description], by default None
-    end_frame : [type], optional
-        [description], by default None
-    batch_size : [type], optional
-        [description], by default None
-    progress_bar : [type], optional
-        [description], by default None
+        factor by which to resize video frames before detection, by default 0.5.
+        Output 'location' and 'norm_pos' are converted back to full-size coordinates.
+    n_cores : int or None, optional
+        number of processes for parallel detection (capped at the CPU count),
+        by default 12; None runs serially
+    start_frame : int, optional
+        first frame to parse, by default None (start of video)
+    end_frame : int, optional
+        frame at which to stop parsing (exclusive), by default None (end of video)
+    batch_size : int, optional
+        number of frames to load at once, by default None, which uses a chunk
+        of video that is ~4 GB in size
+    progress_bar : callable, optional
+        e.g. `tqdm.tqdm`, used to display progress through each batch, by
+        default None (no progress bar)
 
     Returns
     -------
-    [type]
-        [description]
-    """    """
+    circles : dict of arrays
+        one entry per detected marker (possibly several per frame), with fields
+        'location' : (n, 2) marker center in full-size pixels (x, y);
+        'norm_pos' : (n, 2) marker center normalized 0-1 by video width, height;
+        'size' : (n, 2) max ellipse axes across the detected concentric
+        ellipses (in pixels of the resized image);
+        'timestamp' : (n,) frame time.
+        If no markers are found, all fields are empty arrays.
     """
     if progress_bar is None:
-        def progress_bar(x, total=0): return x
+        def progress_bar(x, total=0):
+            """Identity stand-in used when no progress bar is given."""
+            return x
 
     timestamps = np.load(timestamp_file)
 
@@ -192,7 +216,8 @@ def find_checkerboard_frame(frame,
                             detection_flags=11):
     """Find checkerboard marker in one image array.
 
-    Image array should be grayscale, scaled 0-255 (??)
+    Image array should be grayscale (uint8, 0-255, as required by
+    `cv2.cornerSubPix`).
 
     Parameters
     ----------
@@ -212,17 +237,29 @@ def find_checkerboard_frame(frame,
     hdim : int, optional
         horizontal size of image, by default 2048 (VEDB project standard res).
         See note in `scale` kwarg for why this is necessary.
-    refinement_window_size : _type_, optional
-        _description_, by default computed_refinement_window_size
-    checkerboard_size : _type_, optional
-        _description_, by default checkerboard_size
-    detection_flags : _type_, optional
-        _description_, by default detection_flags
+    refinement_window_size : tuple, optional
+        window size (in full-size pixels) for sub-pixel corner refinement with
+        `cv2.cornerSubPix`; multiplied by `scale` (and rounded up) before use,
+        by default (11, 11)
+    checkerboard_size : tuple, optional
+        number of inner corners (columns, rows) of the checkerboard, as
+        expected by `cv2.findChessboardCorners`, by default (3, 6) (i.e. a
+        board of 4 x 7 squares)
+    detection_flags : int, optional
+        flags for `cv2.findChessboardCorners`, by default 11 (see
+        `find_checkerboard`)
 
     Returns
     -------
-    _type_
-        _description_
+    marker : dict
+        empty dict if no checkerboard is found; otherwise a dict with
+        'timestamp' : float, input timestamp;
+        'location_full_checkerboard' : (n_corners, 2) corner positions in
+        full-size pixels;
+        'norm_pos_full_checkerboard' : (n_corners, 2) corner positions
+        normalized 0-1 by `hdim`, `vdim`;
+        'location' : (2,) mean of corners, full-size pixels;
+        'norm_pos' : (2,) mean of corners, normalized 0-1.
     """
     found_checkerboard, corners1 = cv2.findChessboardCorners(
         frame, checkerboard_size, detection_flags)
@@ -280,9 +317,17 @@ def find_checkerboard(
     timestamp_file : string
         timestamp file to accompany video file, with timestamps per frame
     checkerboard_size : tuple, optional
-        size of checkerboard, by default (6, 8)
+        number of inner corners (columns, rows) of checkerboard, as expected
+        by `cv2.findChessboardCorners`, by default (3, 6)
     scale : float, optional
-        scale factor for video; values less than one reduce video size, by default 1.0
+        scale factor for video; values less than one reduce video size, by default 0.5.
+        Outputs are converted back to full-size coordinates.
+    refinement_window_size : tuple, optional
+        window size (full-size pixels) for sub-pixel corner refinement, by
+        default (11, 11)
+    n_cores : int or None, optional
+        number of processes for parallel detection (capped at the CPU count),
+        by default 12; None runs serially
     detection_flags : int, optional
         detection flags for openCV findChessboardCorners (see 
         https://docs.opencv.org/3.0.0/d9/d0c/group__calib3d.html#ga93efa9b0aa890de240ca32b11253dd4a)
@@ -298,17 +343,22 @@ def find_checkerboard(
         that is ~4 GB in size
     progress_bar : tqdm.tqdm progress bar, optional
         progress bar to use for display through video, by default None
-	invert_contrast : bool, optional
-		whether to invert contrast of image (useful for some checkerboards on black backgrounds;
-		opencv expects white background)
+    invert_contrast : bool, optional
+        whether to invert contrast of image (useful for some checkerboards on black
+        backgrounds; opencv expects white background), by default False
 
     Returns
     -------
-    checkerboard_locations
-        dictionary of arrays for locations of checkerboards
+    checkerboard_locations : dict of arrays
+        one entry per frame in which a checkerboard was found, with fields
+        'timestamp', 'location_full_checkerboard', 'norm_pos_full_checkerboard',
+        'location', 'norm_pos' (see `find_checkerboard_frame`). If none are
+        found, all fields are empty arrays.
     """
     if progress_bar is None:
-        def progress_bar(x, total=0): return x
+        def progress_bar(x, total=0):
+            """Identity stand-in used when no progress bar is given."""
+            return x
 
     timestamps = np.load(timestamp_file)
     n_frames_total, vdim, hdim, _ = file_io. list_array_shapes(video_file)

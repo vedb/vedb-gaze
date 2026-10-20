@@ -1,0 +1,40 @@
+# Conda environment for vedb-gaze
+#   conda env create -f environment.yaml
+#   conda activate vedb_gaze
+name: vedb_gaze
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - scikit-learn
+  - pandas
+  - matplotlib
+  - pyyaml
+  - tqdm
+  - appdirs
+  - msgpack-python
+  - opencv
+  # imported by file_io but not installed by its setup.py
+  - six
+  - h5py
+  - pillow
+  - imageio
+  - ipython
+  - pip
+  - pip:
+    # Pieces of Mind lab utilities (required)
+    - git+https://github.com/piecesofmindlab/file_io.git
+    - git+https://github.com/piecesofmindlab/plot_utils.git
+    # Thin-plate splines, used by the default calibration and error steps
+    # (installs PyTorch as a dependency)
+    - git+https://github.com/cheind/py-thin-plate-spline.git
+    # Optional: Pupil Labs pupil detector (only for `pupil-plab_*` configs)
+    # - pupil-detectors
+    # Optional: vedb-store (a few visualization functions)
+    # - git+https://github.com/vedb/vedb-store.git
+    # TODO: pylids (pupil / eyelid detection; default pupil configs). Add its
+    # install source here; it also needs a PyTorch build matching your GPU.
+    # vedb-gaze itself (editable install of this repository)
+    - -e .
