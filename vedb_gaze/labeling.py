@@ -1191,7 +1191,7 @@ def find_saccades_remodnav(gaze,
 #         multiplier = 1
 #     elif time_units in ('minutes', 'm'):
 #         multiplier = 60
-#     st, fin = vedb_store.utils.get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
+#     st, fin = get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
 #     ax.plot(tt[st:fin] / multiplier, y[st:fin], **kwargs)
 
 
