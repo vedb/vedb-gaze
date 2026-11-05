@@ -45,7 +45,6 @@ Optional, needed for specific steps:
 | [thinplate](https://github.com/cheind/py-thin-plate-spline) | thin-plate-spline calibration (`monocular_tps*`) and error estimation; used by the default settings. Installs PyTorch. |
 | pylids | pupil and eyelid detection (`pupil-pylids_*` configs, the default) and eyelid-based blink detection |
 | pupil-detectors | Pupil Labs pupil detector (`pupil-plab_*` configs) |
-| [vedb-store](https://github.com/vedb/vedb-store) | a few visualization functions that index into session videos |
 
 Missing optional packages print a message on import; the steps that need them
 fail only when called.
@@ -194,6 +193,19 @@ If you use it, please cite:
 
 `vedb_gaze.visualization` has plotting functions for each stage, including
 `plot_session_qc` for a one-page quality-control summary of a session.
+
+## Relation to vedb-store
+
+[vedb-store](https://github.com/vedb/vedb-store) is the session and
+data-access layer built on top of vedb-gaze: its `Session`, `SessionClip`
+and `ClipList` classes load raw session streams and the outputs of this
+pipeline. It builds output file names with `vedb_gaze.utils.make_file_strings`
+and the `[defaults]` tags from this package's config, takes its default data
+paths from this package's `[paths]`, and loads odometry with
+`vedb_gaze.odometry.load_odometry`. vedb-gaze does not need vedb-store; the
+few plotting functions that read video frames (`plot_eye_at_marker`,
+`average_frames`, `show_average_frames`) take any session object with
+`get_video_time` / `load` methods, such as a `vedb_store.Session`.
 
 ## Package layout
 
