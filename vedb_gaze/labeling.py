@@ -644,8 +644,8 @@ def detect_blinks(pupil_data,
                   min_eye_opening_time = 30,
                   min_full_blink_time = 16,
                   max_full_blink_time = 500,
-                  negative_velocity_threshold=-2.4, # fraction of eye per second #-0.02,
-                  positive_velocity_threshold=2.4, # fraction of eye per second #0.02,
+                  negative_velocity_threshold=-1, # fraction of eye per second #-0.02,
+                  positive_velocity_threshold=1, # fraction of eye per second #0.02,
                   absolute_max_distance = 400,
                   outlier_z_max=4,
                   max_eye_opening=None,
@@ -660,6 +660,13 @@ def detect_blinks(pupil_data,
     neighbors=7); (4) express distance as a fraction of `max_eye_opening`;
     (5) label blinks by eyelid velocity with `_detect_blinks_eyevel`.
     Requires `pylids`.
+    
+    Note on eye opening: the code will normalize distances by the maximum
+    eye opening. That is, it assumes there are fully-open eyes at some point
+    in the data. If this is not true - for example, if you are only analyzing
+    a clip for which eyes are half-lidded throughout the clip - then you should
+    provide the max_eye_opening keyword (this defaults to max of distances
+    in clip). 
 
     Parameters
     ----------
@@ -732,6 +739,8 @@ def detect_blinks(pupil_data,
     # use the last timestamp as its offset time
     blink_times_resampled_time = [(ts_[st], ts_[min(fin, len(ts_) - 1)], dur*1/fps)
                                   for st, fin, dur in blink_onoff_resampled_time]
+    # Filter detected blinks by eyelid confidence
+    
     #tt = np.asarray([(ts_[st], ts_[fin]) for st, fin, dur in blink_onoff_resampled_time])
     #blink_onoff_orig_time = vedb_gaze.utils.time_to_index(tt, ts).astype(int)
     #blink_index_orig_time = vedb_gaze.utils.onoff_to_binary(blink_onoff_orig_time, len(ts))
