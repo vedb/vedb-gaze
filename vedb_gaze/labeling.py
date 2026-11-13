@@ -1013,6 +1013,7 @@ def find_saccades_remodnav(gaze,
                            savgol_length=None,
                            savgol_polyord=2,
                            max_vel=1000.0,
+                           warn_nan_fraction=0.5,
                            ):
     """Find saccades (and fixations, pursuits, and post-saccadic oscillations)
     with the REMoDNaV algorithm
@@ -1041,6 +1042,14 @@ def find_saccades_remodnav(gaze,
        original samples longer than `max_gap` are set to NaN.
     4. REMoDNaV preprocessing (spike filter, NaN dilation, Savitzky-Golay
        smoothing, velocity computation) and classification are run.
+       Smoothing is applied to each run of valid samples separately; runs
+       shorter than the smoothing window are treated as missing data.
+
+    Missing data (NaN) spreads to neighboring samples in steps 3 and 4
+    (interpolation, NaN dilation, smoothing), so many scattered
+    low-confidence samples can leave little usable data; the fraction of
+    missing samples is returned as `nan_fraction`, and a warning is issued
+    if it exceeds `warn_nan_fraction`.
 
     Note that REMoDNaV was developed for 500-1000 Hz eye trackers; its
     default durations correspond to only a few samples at 120 Hz, and may
@@ -1089,6 +1098,9 @@ def find_saccades_remodnav(gaze,
         does not give a valid (odd) window length at 120 Hz, so if None
         (default), the shortest odd window of at least 0.019 s and more than
         `savgol_polyord` samples is used (3 samples at 120 Hz).
+    warn_nan_fraction : scalar, optional
+        warn if more than this fraction of the preprocessed samples is
+        missing (NaN), by default 0.5
 
     Returns
     -------
@@ -1110,6 +1122,14 @@ def find_saccades_remodnav(gaze,
             (n, 3) array of (onset, offset, duration) for events with labels
             in `saccade_labels`, same format as `blinks_onoff` output of
             blink detection functions.
+        nan_fraction : float
+            fraction of preprocessed samples that are missing (NaN)
+
+    Raises
+    ------
+    ValueError
+        if no valid (non-NaN) gaze samples remain after applying
+        `min_confidence` and resampling
     """
     t = np.asarray(gaze['timestamp'], dtype=float)
     xy = np.asarray(gaze['norm_pos'], dtype=float) * \
@@ -1128,6 +1148,9 @@ def find_saccades_remodnav(gaze,
     idx = np.clip(np.searchsorted(t, new_time, side='right'), 1, len(t) - 1)
     in_gap = (t[idx] - t[idx - 1]) > max_gap
     xy[in_gap] = np.nan
+    if not np.any(np.all(np.isfinite(xy), axis=1)):
+        raise ValueError('No valid gaze samples remain (all below `min_confidence` '
+                         f'= {min_confidence}, or in gaps longer than `max_gap`)')
 
     if savgol_length is None:
         n = max(int(np.ceil(0.019 * fps)), savgol_polyord + 1)
@@ -1162,6 +1185,11 @@ def find_saccades_remodnav(gaze,
                      savgol_polyord=savgol_polyord,
                      max_vel=max_vel,
                      )
+    nan_fraction = float(np.mean(np.isnan(pp['x']) | np.isnan(pp['y'])))
+    if nan_fraction > warn_nan_fraction:
+        warnings.warn(f'{nan_fraction:.0%} of gaze samples are missing (NaN) after '
+                      'preprocessing; saccade detection will miss events. Consider a lower '
+                      '`min_confidence` or check data quality.')
     events = clf(pp, classify_isp=True, sort_events=True)
 
     # Convert event times (seconds from first sample) to gaze clock
@@ -1180,6 +1208,7 @@ def find_saccades_remodnav(gaze,
                 velocity=pp['vel'],
                 events=events_out,
                 saccades_onoff=saccades_onoff,
+                nan_fraction=nan_fraction,
                 )
 
 

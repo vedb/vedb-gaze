@@ -8,7 +8,8 @@ installed packages:
   ``circle_detector``, ``data_processing``, ``file_methods``,
   ``gaze_mappers``, ``methods``.
 - REMoDNaV (MIT): ``remodnav.py`` (Dar, Wagner & Hanke, 2021), used for
-  saccade / fixation labeling.
+  saccade / fixation labeling. Smoothing in its preprocessing is made
+  NaN-aware (see the module docstring).
 
 See the header of each file for its license and attribution.
 """
