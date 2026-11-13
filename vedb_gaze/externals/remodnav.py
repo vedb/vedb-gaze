@@ -17,7 +17,15 @@ Please cite the original work when using this code:
     eye-movement classification for dynamic stimulation. Behavior Research
     Methods, 53(1), 399-414. https://doi.org/10.3758/s13428-020-01428-x
 
-The algorithm itself is unchanged. Modifications relative to the original:
+The algorithm itself is unchanged, apart from NaN handling in smoothing.
+Modifications relative to the original:
+    - in `EyegazeClassifier.preproc`, Savitzky-Golay smoothing is applied
+      separately to each run of valid (non-NaN) samples (`_savgol_filter_nan`)
+      instead of to the whole signal. `scipy.signal.savgol_filter` raises
+      an error if there are NaNs near the start or end of the signal, which
+      low-confidence (NaN) gaze samples there caused. Runs shorter than the
+      filter window are set to NaN (signal loss). Results for data without
+      NaNs are identical to the original.
     - `statsmodels.robust.scale.mad` replaced by the equivalent
       `scipy.stats.median_abs_deviation(..., scale='normal')`, to avoid
       adding statsmodels as a dependency
@@ -203,6 +211,25 @@ def get_dilated_nan_mask(arr, iterations, max_ignore_size=None):
     # mask to cover all samples with dataloss > `max_ignore_size`
     mask = ndimage.binary_dilation(clusters > 0, iterations=iterations)
     return mask
+
+
+def _savgol_filter_nan(x, window_length, polyorder):
+    """Savitzky-Golay filter applied separately to each run of finite samples
+
+    (Not in the original REMoDNaV; see module docstring.) Equivalent to
+    `scipy.signal.savgol_filter(x, window_length, polyorder)` if `x` has no
+    NaNs. NaN samples stay NaN, and runs of finite samples shorter than
+    `window_length` (too short to filter) are set to NaN.
+    """
+    x = np.asarray(x, dtype=float)
+    out = np.full_like(x, np.nan)
+    finite = np.isfinite(x).astype(int)
+    edges = np.diff(np.concatenate([[0], finite, [0]]))
+    starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    for start, end in zip(starts, ends):
+        if end - start >= window_length:
+            out[start:end] = savgol_filter(x[start:end], window_length, polyorder)
+    return out
 
 
 class EyegazeClassifier(object):
@@ -858,7 +885,7 @@ class EyegazeClassifier(object):
                 'Smooth coordinates with Savitzy-Golay filter (len=%i, ord=%i)',
                 savgol_length, savgol_polyord)
             for i in ('x', 'y'):
-                data[i] = savgol_filter(data[i], savgol_length, savgol_polyord)
+                data[i] = _savgol_filter_nan(data[i], savgol_length, savgol_polyord)
 
         # velocity calculation, exclude velocities over `max_vel`
         # no entry for first datapoint!
