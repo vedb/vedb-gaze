@@ -619,7 +619,6 @@ def make_file_strings(
         eye = '%s'
     if validation_checkerboard_size != '4x7':
         validation_marker = validation_marker.replace('4x7', validation_checkerboard_size)
-    #print(validation_marker)
         
     # Must match the hash inputs in `pipelines.pipeline_vedb`. `eyelid` is
     # included because pupil detrending (planned; see
@@ -643,6 +642,7 @@ def make_file_strings(
         validation_epoch = force_list(validation_epoch, convert_tuple=True)
     out = dict(
         pupil = f'pupil_detection-{eye}-{pupil}.npz' if pupil is not None else None,
+        eyelid = f'pupil_detection-{eye}-{eyelid}.npz' if eyelid is not None else None,
         calibration_marker = f'markers-{calibration_marker}-epoch{calibration_epoch:02d}.npz' if calibration_marker is not None else None,
         calibration_cluster = f'markers-{calibration_marker}-{calibration_cluster}-epoch{calibration_epoch:02d}.npz' if calibration_cluster is not None else None,
         calibration = f'calibration-{eye}-{calibration}-{calibration_input_hash}.npz' if calibration is not None else None,
@@ -823,7 +823,7 @@ def load_pipeline_elements(folder,
                  'validation_marker', 'validation_cluster',]:
             outputs[k] = _load_files(fpath, folder, None)
             continue
-        eyes = pupil_eyes if k == 'pupil' else step_eyes
+        eyes = pupil_eyes if k in ('pupil', 'eyelid') else step_eyes
         if k == 'error':
             # One file per validation epoch; missing epochs are None
             outputs[k] = _load_files(fpath, folder, eyes)
