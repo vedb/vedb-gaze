@@ -886,7 +886,7 @@ def remove_outliers(timestamps, data,
 def resample_data(timestamps, data, 
                       fps=120,
                       new_time=None,
-                      method='linear_interpolation',
+                      method='linear',
                       remove_nans=True,
                       **kwargs):
     """Resample data to new (by default uniformly spaced) timestamps
@@ -907,30 +907,31 @@ def resample_data(timestamps, data,
         as None, new_time will be np.arange(timestamps[0], timestamps[-1],
         1/fps) (last timestamp excluded)
     method : str, optional
-        'linear_interpolation' (`scipy.interpolate.interp1d`) or
+        'linear' (`scipy.interpolate.interp1d`) or
+        'cubic' (`scipy.interpolate.interp1d`) or
         'thin-plate_spline' (`scipy.interpolate.RBFInterpolator`), method
-        for interpolation, by default 'linear_interpolation'
+        for interpolation, by default 'linear'
     remove_nans : bool, optional
         whether to remove any nans in data before resampling (this will
         fill in those nans with interpolated values), by default True
     **kwargs
         passed to `scipy.interpolate.RBFInterpolator` for
         'thin-plate_spline' (e.g. `smoothing`; `neighbors` defaults to 7);
-        ignored for 'linear_interpolation'
+        ignored for 'linear'
 
     Returns
     -------
     new_time : np.ndarray
-        new timestamps; (m,) for 'linear_interpolation', (m, 1) for
+        new timestamps; (m,) for 'linear', (m, 1) for
         'thin-plate_spline'
     data_out : np.ndarray
         resampled data; same number of dimensions as `data` for
-        'linear_interpolation', always 2d (m, k) for 'thin-plate_spline'
+        'linear', always 2d (m, k) for 'thin-plate_spline'
     """
     if new_time is None:
         new_time = np.arange(timestamps[0], timestamps[-1], 1/fps)
     # Make 2d for some interpolators
-    make_2d = method not in ('linear_interpolation',)
+    make_2d = method not in ('linear','cubic')
     if make_2d:
         if np.ndim(data) < 2:
             inpt = data.reshape(-1, 1)
@@ -951,8 +952,8 @@ def resample_data(timestamps, data,
         t = t[keep]
         inpt = inpt[keep]
 
-    if method == 'linear_interpolation':
-        interp = scipy.interpolate.interp1d(t, inpt, axis=0)
+    if method in ('linear', 'cubic'):
+        interp = scipy.interpolate.interp1d(t, inpt, axis=0, kind=method, **kwargs)
     elif method == 'thin-plate_spline':
         if not 'neighbors' in kwargs:
             kwargs['neighbors'] = 7
@@ -974,3 +975,30 @@ def filter_data(timestamps, data,
     implementation.
     """
     pass
+
+
+def eyelid_confidence(pupil_data, idx=None):
+    """Per-frame confidence of pylids eyelid keypoints
+
+    The median of `dlc_confidence` over the 32 eyelid keypoints. In pylids
+    output, keypoints are ordered as 2 eye corners, 15 upper-lid and 15
+    lower-lid points (32 eyelid keypoints), followed (in the 48-keypoint
+    eyelid + pupil model) by 16 pupil points.
+
+    Parameters
+    ----------
+    pupil_data : dict
+        pylids output with a 2D 'dlc_confidence' field (frames x keypoints)
+    idx : array-like, slice, or None, optional
+        frames to use (indices, boolean mask, or slice), by default None
+        (all frames)
+
+    Returns
+    -------
+    np.ndarray
+        (n_frames,) median eyelid keypoint confidence
+    """
+    conf = np.asarray(pupil_data['dlc_confidence'])
+    if idx is not None:
+        conf = conf[idx]
+    return np.median(conf[:, :32], axis=1)
