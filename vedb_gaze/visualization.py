@@ -25,7 +25,7 @@ code.
 import matplotlib.pyplot as plt
 from matplotlib import animation, patches, colors, gridspec
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
-from scipy import interpolate
+from scipy import interpolate, stats
 import numpy as np
 import pathlib
 import copy
@@ -36,7 +36,7 @@ import plot_utils
 import file_io
 from .options import config
 from .marker_parsing import marker_cluster_stat, split_timecourse
-from .utils import load_pipeline_elements,  match_time_points, get_frame_indices
+from .utils import load_pipeline_elements,  match_time_points, get_frame_indices, eyelid_confidence
 
 BASE_DIR = pathlib.Path(config.get('paths','base_dir'))
 PROC_DIR = pathlib.Path(config.get('paths','proc_dir'))
@@ -2234,4 +2234,78 @@ def plot_at_times(tt, y, time_start, time_end,
     ax.plot(tt[st:fin] / multiplier, y[st:fin], **kwargs)
 
 
+def plot_eyelid(pupil_data, j, ax=None, color='orange', ol_thresh=np.inf, eyelid_confidence_threshold=0.5, 
+                verbose=False, **kws):
+    """Plot pylids eyelid fits (upper and lower lid) for one frame or a range of frames
 
+    Parameters
+    ----------
+    pupil_data : dict
+        pylids output with 'eyelid_x', 'eyelid_up_y', 'eyelid_lo_y' (fitted
+        eyelid curves) and 'dlc_confidence' fields
+    j : int or (start, end)
+        frame index, or (start, end) frame range; for a range, the mean
+        eyelid curves are plotted, after removing outlying points (`ol_thresh`)
+        and frames with low eyelid confidence
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None (new figure)
+    color : optional
+        line color, by default 'orange'
+    ol_thresh : scalar, optional
+        z-score (across frames) beyond which curve points are removed, for a
+        frame range, by default np.inf (none removed)
+    eyelid_confidence_threshold : scalar, optional
+        frames with eyelid confidence (median over the 32 eyelid keypoints,
+        as in `labeling.detect_blinks`) below this are left out of the mean,
+        by default 0.5
+    verbose : bool, optional
+        print the percentage of points removed, by default False
+    **kws
+        passed to `ax.plot`
+    """
+    if isinstance(j, (list, tuple)):
+        # toss outliers
+        n_nan1 = 0
+        n_nan2 = 0
+        # x
+        xx = pupil_data['eyelid_x'][j[0]:j[1]].copy()
+        n_nan1 += np.sum(np.isnan(xx))
+        xz = stats.zscore(xx, axis=0)
+        xx[(xz < -ol_thresh) | (xz > ol_thresh)] = np.nan
+        n_nan2 += np.sum(np.isnan(xx))
+        # Y lo
+        yy_lo = pupil_data['eyelid_lo_y'][j[0]:j[1]].copy()
+        n_nan1 += np.sum(np.isnan(yy_lo))
+        yy_lo_z = stats.zscore(yy_lo, axis=0)
+        yy_lo[(yy_lo_z < -ol_thresh) | (yy_lo_z > ol_thresh)] = np.nan
+        n_nan2 += np.sum(np.isnan(yy_lo))
+        # Y up
+        yy_up = pupil_data['eyelid_up_y'][j[0]:j[1]].copy()
+        n_nan1 += np.sum(np.isnan(yy_up))
+        yy_up_z = stats.zscore(yy_up, axis=0)
+        yy_up[(yy_up_z < -ol_thresh) | (yy_up_z > ol_thresh)] = np.nan
+        n_nan2 += np.sum(np.isnan(yy_up))
+        
+        # toss low confidence
+        ec = eyelid_confidence(pupil_data, slice(j[0], j[1]))
+        xx[ec < eyelid_confidence_threshold] = np.nan
+        yy_lo[ec < eyelid_confidence_threshold] = np.nan
+        yy_up[ec < eyelid_confidence_threshold] = np.nan
+        
+        # Compute mean w/out outliers
+        x = np.nanmean(xx, axis=0)
+        y_lo = np.nanmean(yy_lo, axis=0)
+        y_up = np.nanmean(yy_up, axis=0)
+        if verbose:
+            print(f'{(n_nan2-n_nan1) / np.prod(yy_up.shape) * 100:.2f}% nans removed')
+    else:
+        x = pupil_data['eyelid_x'][j]
+        y_lo = pupil_data['eyelid_lo_y'][j]
+        y_up = pupil_data['eyelid_up_y'][j]
+    if ax is None:
+        fig, ax = plt.subplots()
+    ax.plot(x, y_lo, color=color, **kws)
+    if 'label' in kws:
+        _ = kws.pop('label')
+    ax.plot(x, y_up, color=color, **kws)
+    ax.axis([0, 400, 400, 0])

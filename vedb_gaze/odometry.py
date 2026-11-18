@@ -23,36 +23,10 @@ from scipy import interpolate
 from matplotlib.gridspec import GridSpec
 import plot_utils
 
-from .utils import dictlist_to_arraydict, get_frame_indices
-from .visualization import angle_hist
+from .utils import dictlist_to_arraydict, get_frame_indices, resample_data
+from .visualization import angle_hist, plot_at_times
 
 
-def resample_data(in_time, in_data, out_time, method='scipy', **kwargs):
-    """Linearly interpolate data to new timestamps
-
-    Parameters
-    ----------
-    in_time : array-like
-        original timestamps
-    in_data : array-like
-        data to resample; first dimension must match `in_time`
-    out_time : array-like
-        new timestamps (must be within the range of `in_time`)
-    method : str, optional
-        only 'scipy' (`scipy.interpolate.interp1d`, linear) is supported,
-        by default 'scipy'; other values raise an UnboundLocalError
-    **kwargs
-        unused
-
-    Returns
-    -------
-    np.ndarray
-        data interpolated at `out_time`
-    """
-    # TODO handle confidence, nans
-    if method=='scipy':
-        out = interpolate.interp1d(in_time, in_data, axis=0)(out_time)
-    return out
 
 def load_odometry(folder,
                   resample=True,
@@ -339,40 +313,6 @@ def convert_speed(mps, to='mins_per_mile'):
         miles_per_hour = mps * sec_per_hr / m_per_mi
         out = miles_per_hour
     return out
-
-
-def plot_at_times(tt, y, time_start, time_end, 
-                  time_units='seconds', ax=None, **kwargs):
-    """Simple timecourse plotting
-    
-    Plot a quantity `y` (that extends over a longer time) only from 
-    `time_start` to `time_end`
-
-    Parameters
-    ----------
-    tt : np.ndarray
-        timestamps for `y`, in seconds
-    y : np.ndarray
-        values to plot; first dimension must match `tt`
-    time_start, time_end : scalar
-        start and end of plotted period, in `time_units` (samples strictly
-        between them are plotted; see `get_frame_indices`)
-    time_units : str, optional
-        'seconds' / 's' or 'minutes' / 'm', units of `time_start`,
-        `time_end`, and of the plotted x axis, by default 'seconds'
-    ax : matplotlib axis or None, optional
-        axis into which to plot, by default None (new figure)
-    **kwargs
-        passed to `ax.plot`
-    """
-    if ax is None:
-        _, ax = plt.subplots()
-    if time_units in ('seconds', 's'):
-        multiplier = 1
-    elif time_units in ('minutes', 'm'):
-        multiplier = 60
-    st, fin = get_frame_indices(time_start * multiplier, time_end * multiplier, tt)
-    ax.plot(tt[st:fin] / multiplier, y[st:fin], **kwargs)
 
 
 

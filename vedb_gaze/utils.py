@@ -619,7 +619,6 @@ def make_file_strings(
         eye = '%s'
     if validation_checkerboard_size != '4x7':
         validation_marker = validation_marker.replace('4x7', validation_checkerboard_size)
-    #print(validation_marker)
         
     # Must match the hash inputs in `pipelines.pipeline_vedb`. `eyelid` is
     # included because pupil detrending (planned; see
@@ -643,6 +642,7 @@ def make_file_strings(
         validation_epoch = force_list(validation_epoch, convert_tuple=True)
     out = dict(
         pupil = f'pupil_detection-{eye}-{pupil}.npz' if pupil is not None else None,
+        eyelid = f'pupil_detection-{eye}-{eyelid}.npz' if eyelid is not None else None,
         calibration_marker = f'markers-{calibration_marker}-epoch{calibration_epoch:02d}.npz' if calibration_marker is not None else None,
         calibration_cluster = f'markers-{calibration_marker}-{calibration_cluster}-epoch{calibration_epoch:02d}.npz' if calibration_cluster is not None else None,
         calibration = f'calibration-{eye}-{calibration}-{calibration_input_hash}.npz' if calibration is not None else None,
@@ -823,7 +823,7 @@ def load_pipeline_elements(folder,
                  'validation_marker', 'validation_cluster',]:
             outputs[k] = _load_files(fpath, folder, None)
             continue
-        eyes = pupil_eyes if k == 'pupil' else step_eyes
+        eyes = pupil_eyes if k in ('pupil', 'eyelid') else step_eyes
         if k == 'error':
             # One file per validation epoch; missing epochs are None
             outputs[k] = _load_files(fpath, folder, eyes)
@@ -886,7 +886,7 @@ def remove_outliers(timestamps, data,
 def resample_data(timestamps, data, 
                       fps=120,
                       new_time=None,
-                      method='linear_interpolation',
+                      method='linear',
                       remove_nans=True,
                       **kwargs):
     """Resample data to new (by default uniformly spaced) timestamps
@@ -907,30 +907,31 @@ def resample_data(timestamps, data,
         as None, new_time will be np.arange(timestamps[0], timestamps[-1],
         1/fps) (last timestamp excluded)
     method : str, optional
-        'linear_interpolation' (`scipy.interpolate.interp1d`) or
+        'linear' (`scipy.interpolate.interp1d`) or
+        'cubic' (`scipy.interpolate.interp1d`) or
         'thin-plate_spline' (`scipy.interpolate.RBFInterpolator`), method
-        for interpolation, by default 'linear_interpolation'
+        for interpolation, by default 'linear'
     remove_nans : bool, optional
         whether to remove any nans in data before resampling (this will
         fill in those nans with interpolated values), by default True
     **kwargs
         passed to `scipy.interpolate.RBFInterpolator` for
         'thin-plate_spline' (e.g. `smoothing`; `neighbors` defaults to 7);
-        ignored for 'linear_interpolation'
+        ignored for 'linear'
 
     Returns
     -------
     new_time : np.ndarray
-        new timestamps; (m,) for 'linear_interpolation', (m, 1) for
+        new timestamps; (m,) for 'linear', (m, 1) for
         'thin-plate_spline'
     data_out : np.ndarray
         resampled data; same number of dimensions as `data` for
-        'linear_interpolation', always 2d (m, k) for 'thin-plate_spline'
+        'linear', always 2d (m, k) for 'thin-plate_spline'
     """
     if new_time is None:
         new_time = np.arange(timestamps[0], timestamps[-1], 1/fps)
     # Make 2d for some interpolators
-    make_2d = method not in ('linear_interpolation',)
+    make_2d = method not in ('linear','cubic')
     if make_2d:
         if np.ndim(data) < 2:
             inpt = data.reshape(-1, 1)
@@ -951,8 +952,8 @@ def resample_data(timestamps, data,
         t = t[keep]
         inpt = inpt[keep]
 
-    if method == 'linear_interpolation':
-        interp = scipy.interpolate.interp1d(t, inpt, axis=0)
+    if method in ('linear', 'cubic'):
+        interp = scipy.interpolate.interp1d(t, inpt, axis=0, kind=method, **kwargs)
     elif method == 'thin-plate_spline':
         if not 'neighbors' in kwargs:
             kwargs['neighbors'] = 7
@@ -974,3 +975,30 @@ def filter_data(timestamps, data,
     implementation.
     """
     pass
+
+
+def eyelid_confidence(pupil_data, idx=None):
+    """Per-frame confidence of pylids eyelid keypoints
+
+    The median of `dlc_confidence` over the 32 eyelid keypoints. In pylids
+    output, keypoints are ordered as 2 eye corners, 15 upper-lid and 15
+    lower-lid points (32 eyelid keypoints), followed (in the 48-keypoint
+    eyelid + pupil model) by 16 pupil points.
+
+    Parameters
+    ----------
+    pupil_data : dict
+        pylids output with a 2D 'dlc_confidence' field (frames x keypoints)
+    idx : array-like, slice, or None, optional
+        frames to use (indices, boolean mask, or slice), by default None
+        (all frames)
+
+    Returns
+    -------
+    np.ndarray
+        (n_frames,) median eyelid keypoint confidence
+    """
+    conf = np.asarray(pupil_data['dlc_confidence'])
+    if idx is not None:
+        conf = conf[idx]
+    return np.median(conf[:, :32], axis=1)
