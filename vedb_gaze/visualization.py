@@ -150,45 +150,46 @@ def circ_dist(a, b, degrees=True):
     return dist
 
 
-abins = np.linspace(-180, 180, 37, endpoint=True)
-def angle_hist(angles, bins=abins, ax=None):
+def angle_hist(angles, bin_width=22.5, ax=None, type='bar', convention='0up', **kwargs):
     """Plot a circular histogram of angles
 
     Parameters
     ----------
     angles : array-like
-        angles (in degrees) to be histogrammed; wrapped to [-180, 180]
-        before binning
-    bins : array-like
-        bin edges in degrees. Defaults to 36 evenly spaced bins (10 deg each)
+        angles (in degrees) to be histogrammed; wrapped into
+        [bins[0], bins[0] + 360) before binning
+    bin_width : array-like
+        bin edges in degrees; must span exactly 360 degrees. Defaults to
+        36 bins of 10 deg each, centered on multiples of 10 deg (so that
+        0, 90, 180, 270 fall at bin centers rather than bin edges)
     ax : matplotlib axis
-        axis into which to plot. If specified, it must hav been
+        axis into which to plot. If specified, it must have been
         created with `projection='polar'`. By default None, which creates
         a new polar figure & axis
-
-    Notes
-    -----
-    Zero degrees is drawn at the top and angles increase clockwise. This is
-    the convention of 'gaze_err_angle' from
-    `error_computation.compute_error` (after converting to degrees).
-    Nothing is returned.
     """
-    # Compute pie slices
-    angles = circ_dist(angles, 0)
+    #bins = np.asarray(bins, dtype=float)
+    bins = np.arange(-180 - bin_width/2, 180 + bin_width/2, bin_width)
+    lo = bins[0]
+    # Wrap angles into [lo, lo + 360) so they line up with the bin edges
+    angles = (np.asarray(angles) - lo) % 360 + lo
     hh, bedges = np.histogram(angles, bins=bins)
 
-    theta = np.radians(bins[:-1] + np.mean(np.diff(bins))/2)
-    radii = hh
-    n = len(bins)-1
-    width = np.ones(n) * np.pi*2 / n
-    #colors = plt.cm.viridis(radii / 10.)
+    # Use the actual bin centers and widths
+    centers = (bedges[:-1] + bedges[1:]) / 2
+    theta = np.radians(centers)
+    width = np.radians(np.diff(bedges))
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(6, 6),
                                subplot_kw=dict(projection='polar'))
-    ax.set_theta_direction(-1)
-    ax.set_theta_offset(np.pi/2.0)
-    ax.bar(theta, radii, width=width, bottom=0.0)
+    if convention == '0up':
+        ax.set_theta_direction(-1)
+        ax.set_theta_offset(np.pi / 2.0)
+    if type == 'bar':
+        ax.bar(theta, hh, width=width, bottom=0.0)
+    elif type == 'line':
+        ax.plot(np.hstack([theta, theta[0]]), np.hstack([hh, hh[0]]), **kwargs)
+    return ax
 
 
 def plot_timestamps(timestamps, full_time, start_time=0, ax=None, **kwargs):
